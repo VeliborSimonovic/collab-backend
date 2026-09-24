@@ -9,6 +9,9 @@ const remoteCursors = new Map();
 let retryMs = 1000;
 let lastPresence = 0;
 let presenceTimer = null;
+let docId = "demo";   
+let token = null;     
+let role = "editor";
 
 const statusEl = document.getElementById("status");
 const editor = document.getElementById("editor");
@@ -126,7 +129,7 @@ function onMessage(ev) {
   const payload = data.subarray(1);
   switch (type) {
     case 1:
-      send(2, doc.diff(payload));
+      if (role !== "viewer") send(2, doc.diff(payload));
       break;
     case 2:
       applyRemote(payload);
@@ -148,10 +151,13 @@ function onMessage(ev) {
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${scheme}//${location.host}/ws?doc=demo&name=${encodeURIComponent(name)}`);
+  const q = token
+    ? `doc=${encodeURIComponent(docId)}&token=${encodeURIComponent(token)}`
+    : `doc=${encodeURIComponent(docId)}&name=${encodeURIComponent(name)}`;
+  ws = new WebSocket(`${scheme}//${location.host}/ws?${q}`);
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
-    statusEl.textContent = `connected as ${name}`;
+    statusEl.textContent = `connected to ${docId} as ${name} (${role})`;
     retryMs = 1000;
     send(1, doc.stateVector());
     sendPresence();
@@ -173,6 +179,22 @@ async function start() {
 
   myId = Math.floor(Math.random() * 2 ** 48) + 2 ** 20;
   name = "user-" + Math.floor(Math.random() * 1000);
+
+  const params = new URLSearchParams(location.search);
+  docId = params.get("doc") || "demo";
+  token = params.get("token");
+  if (token) {
+    try {
+      const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const claims = JSON.parse(atob(payload));
+      name = claims.name || claims.sub || name;
+      role = claims.role || role;
+    } catch (e) {
+      console.error("could not read token payload", e);
+    }
+  }
+  if (role === "viewer") editor.readOnly = true;
+  document.title = `${docId} · ${name} (${role})`;
   doc = yata.newDoc(myId);
   oldText = [];
 

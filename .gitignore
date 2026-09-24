@@ -1,0 +1,8 @@
+web/collab.wasm
+*.db
+*.db-wal
+*.db-shm
+data/
+/collabd
+*.pem
+.env

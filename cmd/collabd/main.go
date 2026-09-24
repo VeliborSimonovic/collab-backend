@@ -28,6 +28,7 @@ type config struct {
 	idle       time.Duration
 	maxClients int
 	maxItems   int
+	dev        bool
 }
 
 func envString(key, def string) string {
@@ -47,6 +48,18 @@ func envInt(key string, def int) int {
 		log.Fatalf("%s: invalid integer %q", key, v)
 	}
 	return n
+}
+
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Fatalf("%s: invalid boolean %q (use 1, true, 0 or false)", key, v)
+	}
+	return b
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
@@ -79,15 +92,25 @@ func loadConfig() config {
 	flag.StringVar(&cfg.addr, "addr", cfg.addr, "listen address (env COLLAB_ADDR)")
 	flag.StringVar(&cfg.dbPath, "db", cfg.dbPath, "SQLite database path (env COLLAB_DB)")
 	flag.BoolVar(&cfg.mem, "mem", false, "use the in-memory store instead of SQLite")
+	flag.BoolVar(&cfg.dev, "dev", envBool("COLLAB_DEV", false), "dev mode: no auth, everyone is an editor; local testing only (env COLLAB_DEV)")
 	flag.Parse()
 
 	return cfg
 }
 
-func makeAuth(publicKey string) server.Authenticator {
-	if publicKey == "" {
+func makeAuth(publicKey string, dev bool) server.Authenticator {
+
+	if publicKey != "" && dev {
+		log.Print("-dev flag ignored, COLLAB_PUBLIC_KEY is set")
+	}
+
+	if publicKey == "" && dev {
 		return server.NewDevAuth()
 	}
+	if publicKey == "" && !dev {
+		log.Fatal("COLLAB_PUBLIC_KEY is not set: set it (see `collabd keygen`), or pass -dev / COLLAB_DEV=1 for local testing only")
+	}
+
 	key, err := base64.StdEncoding.DecodeString(publicKey)
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		log.Fatal("COLLAB_PUBLIC_KEY must be a base64-encoded 32-byte Ed25519 public key (see `collabd keygen`)")
@@ -121,7 +144,7 @@ func main() {
 	}
 
 	hub := server.NewHub(st, server.Limits{MaxClients: cfg.maxClients, MaxItems: cfg.maxItems}, cfg.idle)
-	srv := server.NewServer(hub, cfg.origins, makeAuth(cfg.publicKey))
+	srv := server.NewServer(hub, cfg.origins, makeAuth(cfg.publicKey, cfg.dev))
 
 	httpSrv := &http.Server{
 		Addr:    cfg.addr,

@@ -55,3 +55,33 @@ func TestHubEvictsIdleRoomAndReloads(t *testing.T) {
 		t.Fatalf("reloaded room text = %q, want %q", room2.doc.String(), "x")
 	}
 }
+
+func TestLargestRoom(t *testing.T) {
+	hub := NewHub(store.NewMemory(), Limits{MaxClients: 100, MaxItems: 1_000_000}, time.Minute)
+
+	a, releaseA, err := hub.Acquire("a")
+	if err != nil {
+		t.Fatalf("Acquire a: %v", err)
+	}
+	defer releaseA()
+	if err := a.Edit(0, 0, "hello"); err != nil {
+		t.Fatalf("Edit a: %v", err)
+	}
+
+	b, releaseB, err := hub.Acquire("b")
+	if err != nil {
+		t.Fatalf("Acquire b: %v", err)
+	}
+	defer releaseB()
+	if err := b.Edit(0, 0, "hi"); err != nil {
+		t.Fatalf("Edit b: %v", err)
+	}
+
+	items, load := hub.Largest()
+	if items != 5 {
+		t.Fatalf("Largest items = %d, want 5", items)
+	}
+	if load < 0 {
+		t.Fatalf("Largest load = %v, want >= 0", load)
+	}
+}

@@ -229,6 +229,49 @@ func TestViewerUpdateRejected(t *testing.T) {
 	}
 }
 
+func TestViewerEmptyUpdateAllowed(t *testing.T) {
+	room := newTestRoom(t)
+	viewer := newFakeClient(t, room, 2, "viewer")
+
+	err := room.Handle(viewer.client, frame(MsgUpdate, crdt.EncodeOps(nil)))
+	if err != nil {
+		t.Fatalf("want nil for viewer empty update, got %v", err)
+	}
+}
+
+type failingStore struct {
+	*store.Memory
+}
+
+func (failingStore) Append(string, []crdt.Op) error {
+	return errors.New("disk full")
+}
+
+func TestSaveErrorDisconnects(t *testing.T) {
+	room, err := OpenRoom("doc1", failingStore{store.NewMemory()}, NewLimits(WithMaxClients(100), WithMaxItems(1000000)))
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	a := newFakeClient(t, room, 2, "editor")
+	b := newFakeClient(t, room, 3, "editor")
+
+	op, err := a.doc.LocalInsert(0, 'x')
+	if err != nil {
+		t.Fatalf("LocalInsert: %v", err)
+	}
+
+	err = room.Handle(a.client, frame(MsgUpdate, crdt.EncodeOps([]crdt.Op{op})))
+	if err == nil {
+		t.Fatal("want error from Handle when the store fails, got nil")
+	}
+
+	select {
+	case f := <-b.client.Out():
+		t.Fatalf("B received a frame after a failed save: %v", f)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestGarbageBytesRejected(t *testing.T) {
 	room := newTestRoom(t)
 	editor := newFakeClient(t, room, 2, "editor")

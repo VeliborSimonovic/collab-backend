@@ -30,6 +30,19 @@ func NewHub(st store.Store, lim Limits, idle time.Duration) *Hub {
 	}
 }
 
+func (h *Hub) Largest() (items int, load time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for _, e := range h.rooms {
+		n, l := e.room.Size()
+		if n > items {
+			items, load = n, l
+		}
+	}
+	return items, load
+}
+
 func (h *Hub) Acquire(doc string) (*Room, func(), error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

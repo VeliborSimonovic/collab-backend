@@ -52,7 +52,7 @@ On Docker with `--cpus=2 --memory=1g`, 200 WebSocket connections typing 10 chara
 
 ## Protocol
 
-The wire format is documented in PROTOCOL.md.
+The wire format is documented in [PROTOCOL.md](PROTOCOL.md).
 
 ## License
 

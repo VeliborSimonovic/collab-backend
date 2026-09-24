@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/veliborsimonovic/collab/crdt"
 	"github.com/veliborsimonovic/collab/store"
@@ -29,15 +30,17 @@ var (
 )
 
 type Room struct {
-	mu      sync.Mutex
-	id      string
-	doc     *crdt.Doc
-	store   store.Store
-	clients map[*Client]bool
-	limits  Limits
+	mu       sync.Mutex
+	id       string
+	doc      *crdt.Doc
+	store    store.Store
+	clients  map[*Client]bool
+	limits   Limits
+	loadTime time.Duration
 }
 
 func OpenRoom(id string, st store.Store, lim Limits) (*Room, error) {
+	startTime := time.Now()
 	ops, err := st.Load(id)
 	if err != nil {
 		return nil, err
@@ -48,13 +51,23 @@ func OpenRoom(id string, st store.Store, lim Limits) (*Room, error) {
 	doc.DropPending()
 	doc.ResumeClock()
 
+	duration := time.Since(startTime)
+
 	return &Room{
-		id:      id,
-		doc:     doc,
-		store:   st,
-		clients: make(map[*Client]bool),
-		limits:  lim,
+		id:       id,
+		doc:      doc,
+		store:    st,
+		clients:  make(map[*Client]bool),
+		limits:   lim,
+		loadTime: duration,
 	}, nil
+}
+
+func (r *Room) Size() (items int, load time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.doc.Len(), r.loadTime
 }
 
 func (r *Room) broadcast(f []byte, except *Client) {
@@ -131,13 +144,20 @@ func (r *Room) Handle(c *Client, msg []byte) error {
 		return nil
 
 	case MsgUpdate:
-		if c.Role == "viewer" {
-			return ErrReadOnly
-		}
+
 		ops, err := crdt.DecodeOps(msg[1:])
 		if err != nil {
 			return crdt.ErrBadMessage
 		}
+
+		if len(ops) == 0 {
+			return nil
+		}
+
+		if c.Role == "viewer" {
+			return ErrReadOnly
+		}
+
 		if r.doc.Len()+len(ops) > r.limits.MaxItems {
 			return ErrDocTooBig
 		}
@@ -146,9 +166,8 @@ func (r *Room) Handle(c *Client, msg []byte) error {
 			return crdt.ErrBadMessage
 		}
 
-		r.commit(applied, c)
+		return r.commit(applied, c)
 
-		return nil
 	case MsgPresence:
 		r.handlePresence(c, msg[1:])
 		return nil

@@ -6,8 +6,12 @@ wasm:
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" web/
 
 run: wasm
-	go run ./cmd/collabd -mem
+	go run ./cmd/collabd -mem -dev
 
 test: wasm
 	go vet ./...
 	go test -race ./...
+
+test-nocache: wasm
+	go vet ./...
+	go test -race ./... -count=1

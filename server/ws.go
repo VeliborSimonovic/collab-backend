@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"runtime"
+	"time"
 
 	"github.com/veliborsimonovic/collab/web"
 
@@ -16,6 +18,11 @@ type Server struct {
 	origins []string
 	auth    Authenticator
 }
+
+var (
+	pingInterval = 30 * time.Second
+	pingTimeout  = 10 * time.Second
+)
 
 func NewServer(hub *Hub, origins []string, auth Authenticator) *Server {
 	return &Server{
@@ -67,6 +74,29 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	done := make(chan bool)
+	go func() {
+
+		for {
+			select {
+			case <-done:
+				return
+			case _ = <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+				defer cancel()
+				err := conn.Ping(ctx)
+				if err != nil {
+					conn.CloseNow()
+					return
+				}
+			}
+		}
+
+	}()
+
 	defer release()
 	defer room.Leave(c)
 
@@ -101,11 +131,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 
+	items, time := s.hub.Largest()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"rooms":  rooms,
-		"conns":  conns,
-		"heapMB": float64(mem.HeapAlloc) / 1e6,
+		"rooms":     rooms,
+		"conns":     conns,
+		"heapMB":    float64(mem.HeapAlloc) / 1e6,
+		"maxItems":  items,
+		"maxLoadMs": float64(time),
 	})
 }
 

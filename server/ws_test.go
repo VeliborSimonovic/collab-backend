@@ -206,3 +206,50 @@ func TestWebSocketDocIndependence(t *testing.T) {
 	a2.readFrame(time.Second)
 	a2.waitForText("x", 2*time.Second)
 }
+
+func TestPingDropsDeadClient(t *testing.T) {
+	oldInterval, oldTimeout := pingInterval, pingTimeout
+	pingInterval, pingTimeout = 50*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { pingInterval, pingTimeout = oldInterval, oldTimeout })
+
+	st := store.NewMemory()
+	t.Cleanup(func() { st.Close() })
+	hub := NewHub(st, Limits{MaxClients: 100, MaxItems: 1_000_000}, 5*time.Minute)
+	ts := httptest.NewServer(NewServer(hub, nil, NewDevAuth()).Handler())
+	t.Cleanup(ts.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// A never reads, so it never answers pings.
+	a := dialClient(t, ctx, ts.URL, "demo", 2, "a")
+
+	// B keeps reading, which lets the library answer pings.
+	b := dialClient(t, ctx, ts.URL, "demo", 3, "b")
+	go func() {
+		for {
+			if _, _, err := b.conn.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	if _, conns := hub.Stats(); conns != 1 {
+		t.Fatalf("conns = %d, want 1 (only B)", conns)
+	}
+
+	readCtx, readCancel := context.WithTimeout(ctx, time.Second)
+	defer readCancel()
+	// Frames the server sent before dropping A may still be buffered; drain
+	// them until the close shows up as an error.
+	for {
+		if _, _, err := a.conn.Read(readCtx); err != nil {
+			if readCtx.Err() != nil {
+				t.Fatal("A was never disconnected: read only ended on our own timeout")
+			}
+			break
+		}
+	}
+}

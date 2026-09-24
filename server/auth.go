@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -111,7 +111,7 @@ func (a tokenAuth) Authenticate(r *http.Request, doc string) (*Claims, error) {
 }
 
 func NewDevAuth() Authenticator {
-	fmt.Print("WARNING: COLLAB_PUBLIC_KEY is not set. DEV MODE: anyone can connect as an editor.")
+	log.Print("WARNING: DEV MODE: no token is checked, anyone can connect as an editor.")
 	return &devAuth{}
 }
 

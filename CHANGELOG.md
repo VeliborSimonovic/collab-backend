@@ -1,8 +1,16 @@
 # Changelog
 
+## v0.1.2
+
+- Empty Updates are ignored for every role, so any viewer client can complete the handshake
+- A failed save disconnects the client instead of being silently dropped
+- Dev mode must be switched on explicitly with `COLLAB_DEV=1` / `-dev`, and the server refuses to start with no key and no dev flag (`-dev` is ignored, with a warning, when a key is set; `make run` passes `-dev`)
+- The server pings every connection every 30 s and drops dead ones
+- `/healthz` reports `maxItems` and `maxLoadMs`
+
 ## v0.1.1
 
-- Demo page: open any document as any user with `?doc=<id>&token=<jwt>`; the name and role come from the token. Without a token it still runs in dev mode (`?doc=` optional, defaults to `demo`)
+- Demo page: open any document as any user with `?doc=<id>&token=<jwt>`; the name and role come from the token. Without a token it works only when the engine runs in dev mode (`?doc=` optional, defaults to `demo`)
 - Demo page: viewers get a read-only editor, and the status line and tab title show the document, name and role
 - Fix: viewers on the demo page no longer get disconnected in a loop. The page answered the server's handshake with an empty Update, which the server refuses from viewers; viewers now skip that reply, stay connected, receive edits live and show up in the user list
 - `scripts/run-token-mode.sh`: runs the engine in token mode with `COLLAB_PUBLIC_KEY` from `.env` and the in-memory store

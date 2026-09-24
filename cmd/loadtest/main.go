@@ -84,6 +84,7 @@ func (c *client) readLoop(ctx context.Context, onOps func([]crdt.Op)) error {
 			if err != nil {
 				return err
 			}
+
 			c.mu.Lock()
 			c.doc.Receive(ops...)
 			c.mu.Unlock()

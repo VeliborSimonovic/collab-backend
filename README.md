@@ -10,12 +10,12 @@ It is **not** a product: there are no user accounts, no billing and no UI beyond
 git clone https://github.com/VeliborSimonovic/collab-backend.git
 cd collab-backend
 docker build -t collab .
-docker run -p 8080:8080 -v collab-data:/data collab
+docker run -p 8080:8080 -v collab-data:/data -e COLLAB_DEV=1 collab
 ```
 
 Open <http://localhost:8080> in two tabs and type.
 
-With no `COLLAB_PUBLIC_KEY` set the engine runs in **dev mode**: anyone can connect and edit. Don't expose that to the internet.
+**Dev mode** must be explicitly set using `-e COLLAB_DEV=1` flag
 
 > On Docker Desktop for Mac, prefer a named volume (`-v collab-data:/data`) over a bind mount such as `-v ./data:/data`. Every edit is committed to SQLite, and fsync on a macOS bind mount is so slow that latency climbed to tens of seconds under load. On a Linux server a bind mount is fine.
 
@@ -28,11 +28,12 @@ Every setting can be an environment variable or, where noted, a flag. A flag bea
 | `COLLAB_ADDR` (`-addr`) | `:8080` | Listen address. |
 | `COLLAB_DB` (`-db`) | `collab.db` (`/data/collab.db` in the Docker image) | SQLite file. |
 | `-mem` (flag only) | off | Keep everything in memory; nothing is saved. |
-| `COLLAB_PUBLIC_KEY` | empty | Base64 Ed25519 public key. Empty = dev mode (anyone can edit). |
+| `COLLAB_PUBLIC_KEY` | empty | Base64 Ed25519 public key. Required unless dev mode is on. |
 | `COLLAB_ORIGINS` | empty | Comma-separated browser origins allowed to open a WebSocket, as host or host:port without `https://`, e.g. `app.example.com,localhost:3000`. Empty = same-origin only. |
 | `COLLAB_IDLE` | `5m` | How long an unused document stays in memory (Go duration: `5m`, `30s`). |
 | `COLLAB_MAX_CLIENTS` | `100` | Connections per document. |
 | `COLLAB_MAX_ITEMS` | `1000000` | Characters per document, including deleted ones. |
+| `COLLAB_DEV` / `-dev` | off | Dev mode: no auth, anyone can edit. Only used when no key is set (ignored with a warning otherwise). Local testing only. |
 
 An invalid value (for example `COLLAB_MAX_CLIENTS=abc`) stops the server at startup with a message naming the variable.
 

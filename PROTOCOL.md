@@ -205,7 +205,7 @@ Send the token as `?token=` (browsers cannot set headers on a WebSocket) or as `
 | no token, bad signature, other `alg`, expired, or a missing `doc` or wrong `role` | 401 |
 | the token is for a different document | 403 |
 
-> With no `COLLAB_PUBLIC_KEY` the engine is in dev mode: no token is checked, everybody is an editor, and `?name=` sets the display name. Never expose that.
+> With no `COLLAB_PUBLIC_KEY` and `-dev` / `COLLAB_DEV=1`, the engine is in dev mode (without `-dev` it refuses to start): no token is checked, everybody is an editor, and `?name=` sets the display name. Never expose that.
 
 ## 8. HTTP API
 

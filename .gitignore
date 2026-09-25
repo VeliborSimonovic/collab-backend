@@ -6,3 +6,4 @@ data/
 /collabd
 *.pem
 .env
+scripts/release.sh

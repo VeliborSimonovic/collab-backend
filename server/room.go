@@ -65,9 +65,7 @@ func NewLimits(opts ...LimitsOption) Limits {
 }
 
 func (r *Room) Count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.clients)
+	return int(r.clientCount.Load())
 }
 
 func (r *Room) handlePresence(c *Client, payload []byte) {
@@ -143,6 +141,8 @@ func (r *Room) Edit(pos, del int, ins string) error {
 			ops = append(ops, op)
 		}
 	}
+
+	r.itemCount.Store(int64(r.doc.Len()))
 
 	err := r.commit(ops, nil)
 	if err != nil {

@@ -11,6 +11,8 @@ type entry struct {
 	room  *Room
 	refs  int
 	timer *time.Timer
+	ready chan struct{}
+	err   error
 }
 
 type Hub struct {
@@ -35,6 +37,9 @@ func (h *Hub) Largest() (items int, load time.Duration) {
 	defer h.mu.Unlock()
 
 	for _, e := range h.rooms {
+		if e.room == nil {
+			continue
+		}
 		n, l := e.room.Size()
 		if n > items {
 			items = n
@@ -48,23 +53,39 @@ func (h *Hub) Largest() (items int, load time.Duration) {
 
 func (h *Hub) Acquire(doc string) (*Room, func(), error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	e, ok := h.rooms[doc]
 	if !ok {
-		room, err := OpenRoom(doc, h.store, h.limits)
-		if err != nil {
-			return nil, nil, err
-		}
-		e = &entry{room: room}
+		e = &entry{ready: make(chan struct{}), refs: 1}
 		h.rooms[doc] = e
+		h.mu.Unlock()
+
+		room, err := OpenRoom(doc, h.store, h.limits)
+
+		h.mu.Lock()
+		e.room, e.err = room, err
+		if err != nil && h.rooms[doc] == e {
+			delete(h.rooms, doc)
+		}
+		h.mu.Unlock()
+		close(e.ready)
+	} else {
+		e.refs++
+		if e.timer != nil {
+			e.timer.Stop()
+			e.timer = nil
+		}
+		h.mu.Unlock()
+
+		<-e.ready
 	}
 
-	if e.timer != nil {
-		e.timer.Stop()
-		e.timer = nil
+	if e.err != nil {
+		h.mu.Lock()
+		e.refs--
+		h.mu.Unlock()
+		return nil, nil, e.err
 	}
-	e.refs++
 
 	var once sync.Once
 	release := func() {
@@ -88,12 +109,22 @@ func (h *Hub) Acquire(doc string) (*Room, func(), error) {
 	return e.room, release, nil
 }
 
+func (h *Hub) WriteQueue() int {
+	if b, ok := h.store.(*store.Batched); ok {
+		return b.Pending()
+	}
+	return 0
+}
+
 func (h *Hub) Stats() (rooms, conns int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	rooms = len(h.rooms)
 	for _, e := range h.rooms {
+		if e.room == nil {
+			continue
+		}
 		conns += e.room.Count()
 	}
 	return rooms, conns

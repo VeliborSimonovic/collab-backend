@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/veliborsimonovic/collab/crdt"
@@ -30,13 +31,15 @@ var (
 )
 
 type Room struct {
-	mu       sync.Mutex
-	id       string
-	doc      *crdt.Doc
-	store    store.Store
-	clients  map[*Client]bool
-	limits   Limits
-	loadTime time.Duration
+	mu          sync.Mutex
+	id          string
+	doc         *crdt.Doc
+	store       store.Store
+	clients     map[*Client]bool
+	limits      Limits
+	loadTime    time.Duration
+	clientCount atomic.Int64
+	itemCount   atomic.Int64
 }
 
 func OpenRoom(id string, st store.Store, lim Limits) (*Room, error) {
@@ -53,21 +56,21 @@ func OpenRoom(id string, st store.Store, lim Limits) (*Room, error) {
 
 	duration := time.Since(startTime)
 
-	return &Room{
+	r := &Room{
 		id:       id,
 		doc:      doc,
 		store:    st,
 		clients:  make(map[*Client]bool),
 		limits:   lim,
 		loadTime: duration,
-	}, nil
+	}
+	r.itemCount.Store(int64(doc.Len()))
+
+	return r, nil
 }
 
 func (r *Room) Size() (items int, load time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.doc.Len(), r.loadTime
+	return int(r.itemCount.Load()), r.loadTime
 }
 
 func (r *Room) broadcast(f []byte, except *Client) {
@@ -102,7 +105,7 @@ func (r *Room) Join(c *Client) error {
 
 	r.clients[c] = true
 	c.push(frame(MsgSyncStep1, crdt.EncodeSV(r.doc.StateVector())))
-
+	r.clientCount.Add(1)
 	for other := range r.clients {
 		if other != c && other.presence != nil {
 			c.push(frame(MsgPresence, other.presence))
@@ -119,8 +122,10 @@ func (r *Room) Leave(c *Client) {
 	if c.presence != nil {
 		r.broadcast(frame(MsgPresenceGone, c.presence), nil)
 	}
-
-	delete(r.clients, c)
+	if r.clients[c] {
+		delete(r.clients, c)
+		r.clientCount.Add(-1)
+	}
 }
 
 func (r *Room) Handle(c *Client, msg []byte) error {
@@ -162,7 +167,9 @@ func (r *Room) Handle(c *Client, msg []byte) error {
 			return ErrDocTooBig
 		}
 		applied := r.doc.Receive(ops...)
-		if r.doc.DropPending() > 0 {
+		dropped := r.doc.DropPending()
+		r.itemCount.Store(int64(r.doc.Len()))
+		if dropped > 0 {
 			return crdt.ErrBadMessage
 		}
 

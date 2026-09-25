@@ -253,3 +253,43 @@ func TestPingDropsDeadClient(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthDuringBusyRoom(t *testing.T) {
+	hub := NewHub(store.NewMemory(), NewLimits(), time.Minute)
+	srv := NewServer(hub, nil, NewDevAuth())
+
+	room, release, err := hub.Acquire("busy")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer release()
+
+	room.mu.Lock()
+	locked := true
+	unlock := func() {
+		if locked {
+			locked = false
+			room.mu.Unlock()
+		}
+	}
+	defer unlock()
+
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		unlock()
+		<-done
+		t.Fatal("/healthz did not answer within 100ms while a room was locked")
+	}
+
+	if rec.Code != 200 {
+		t.Fatalf("/healthz status = %d, want 200", rec.Code)
+	}
+}

@@ -1,4 +1,4 @@
-.PHONY: wasm run test
+.PHONY: wasm run test release-patch release-minor release-major
 
 wasm:
 	mkdir -p web
@@ -15,3 +15,12 @@ test: wasm
 test-nocache: wasm
 	go vet ./...
 	go test -race ./... -count=1
+
+release-patch:
+	./scripts/release.sh patch
+
+release-minor:
+	./scripts/release.sh minor
+
+release-major:
+	./scripts/release.sh major

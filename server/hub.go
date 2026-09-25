@@ -37,7 +37,10 @@ func (h *Hub) Largest() (items int, load time.Duration) {
 	for _, e := range h.rooms {
 		n, l := e.room.Size()
 		if n > items {
-			items, load = n, l
+			items = n
+		}
+		if l > load {
+			load = l
 		}
 	}
 	return items, load

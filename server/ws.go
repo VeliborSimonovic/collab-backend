@@ -77,17 +77,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
-	done := make(chan bool)
 	go func() {
 
 		for {
 			select {
-			case <-done:
+			case <-ctx.Done():
 				return
 			case _ = <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
-				defer cancel()
 				err := conn.Ping(ctx)
+				cancel()
 				if err != nil {
 					conn.CloseNow()
 					return
@@ -131,7 +130,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 
-	items, time := s.hub.Largest()
+	items, load := s.hub.Largest()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -139,7 +138,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"conns":     conns,
 		"heapMB":    float64(mem.HeapAlloc) / 1e6,
 		"maxItems":  items,
-		"maxLoadMs": float64(time),
+		"maxLoadMs": float64(load) / float64(time.Millisecond),
 	})
 }
 

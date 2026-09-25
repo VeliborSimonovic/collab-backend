@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.3
+
+- Small refactoring
+- `Largest()` now takes biggest values that cna be from different rooms
+- Goroutine in `HandleWS()` now uses `case <- ctx.Done()` insead of `case <- done`, `cancel()` is called after pinging instead of being defered
+
+
+
 ## v0.1.2
 
 - Empty Updates are ignored for every role, so any viewer client can complete the handshake

@@ -39,7 +39,7 @@ func OpenSQLite(path string) (*SQLite, error) {
 	return &SQLite{db: db}, nil
 }
 
-func (s *SQLite) Append(doc string, ops []crdt.Op) error {
+func (s *SQLite) AppendBatch(batch map[string][]crdt.Op) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -52,15 +52,21 @@ func (s *SQLite) Append(doc string, ops []crdt.Op) error {
 	}
 	defer stmt.Close()
 
-	for _, op := range ops {
-		data := crdt.EncodeOps([]crdt.Op{op})
+	for doc, ops := range batch {
+		for _, op := range ops {
+			data := crdt.EncodeOps([]crdt.Op{op})
 
-		if _, err := stmt.Exec(doc, int64(op.OpID().Client), int64(op.OpID().Clock), data); err != nil {
-			return err
+			if _, err := stmt.Exec(doc, int64(op.OpID().Client), int64(op.OpID().Clock), data); err != nil {
+				return err
+			}
 		}
 	}
 
 	return tx.Commit()
+}
+
+func (s *SQLite) Append(doc string, ops []crdt.Op) error {
+	return s.AppendBatch(map[string][]crdt.Op{doc: ops})
 }
 
 func (s *SQLite) Load(doc string) ([]crdt.Op, error) {

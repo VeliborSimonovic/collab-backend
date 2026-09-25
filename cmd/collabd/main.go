@@ -8,6 +8,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -29,6 +30,8 @@ type config struct {
 	maxClients int
 	maxItems   int
 	dev        bool
+	flush      time.Duration
+	pprof      string
 }
 
 func envString(key, def string) string {
@@ -82,6 +85,9 @@ func loadConfig() config {
 		idle:       envDuration("COLLAB_IDLE", 5*time.Minute),
 		maxClients: envInt("COLLAB_MAX_CLIENTS", 100),
 		maxItems:   envInt("COLLAB_MAX_ITEMS", 1_000_000),
+		dev:        envBool("COLLAB_DEV", false),
+		flush:      envDuration("COLLAB_FLUSH", 10*time.Millisecond),
+		pprof:      envString("COLLAB_PPROF", ""),
 	}
 	if raw := os.Getenv("COLLAB_ORIGINS"); raw != "" {
 		for _, o := range strings.Split(raw, ",") {
@@ -92,7 +98,9 @@ func loadConfig() config {
 	flag.StringVar(&cfg.addr, "addr", cfg.addr, "listen address (env COLLAB_ADDR)")
 	flag.StringVar(&cfg.dbPath, "db", cfg.dbPath, "SQLite database path (env COLLAB_DB)")
 	flag.BoolVar(&cfg.mem, "mem", false, "use the in-memory store instead of SQLite")
-	flag.BoolVar(&cfg.dev, "dev", envBool("COLLAB_DEV", false), "dev mode: no auth, everyone is an editor; local testing only (env COLLAB_DEV)")
+	flag.BoolVar(&cfg.dev, "dev", cfg.dev, "dev mode: no auth, everyone is an editor; local testing only (env COLLAB_DEV)")
+	flag.DurationVar(&cfg.flush, "flush", cfg.flush, "interval between SQLite write batches (env COLLAB_FLUSH)")
+	flag.StringVar(&cfg.pprof, "pprof", cfg.pprof, "address for the pprof profiling server, empty = off; never expose it publicly (env COLLAB_PPROF)")
 	flag.Parse()
 
 	return cfg
@@ -140,7 +148,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("open database %q: %v", cfg.dbPath, err)
 		}
-		st = sq
+		st = store.NewBatched(sq, cfg.flush)
 	}
 
 	hub := server.NewHub(st, server.Limits{MaxClients: cfg.maxClients, MaxItems: cfg.maxItems}, cfg.idle)
@@ -160,6 +168,16 @@ func main() {
 			log.Fatalf("ListenAndServe: %v", err)
 		}
 	}()
+
+	if cfg.pprof != "" {
+		go func() {
+			log.Printf("pprof listening on %s", cfg.pprof)
+
+			if err := http.ListenAndServe(cfg.pprof, nil); err != nil {
+				log.Printf("pprof: %v", err)
+			}
+		}()
+	}
 
 	<-ctx.Done()
 	log.Println("shutting down")

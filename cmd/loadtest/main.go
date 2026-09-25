@@ -115,6 +115,9 @@ type registry struct {
 	mu   sync.Mutex
 	docs map[string][]*client
 	errs []error
+
+	kicks            atomic.Int64
+	failedReconnects atomic.Int64
 }
 
 func (r *registry) add(doc string, c *client) {
@@ -144,19 +147,58 @@ func runClient(editCtx, connCtx context.Context, url, doc string, rate time.Dura
 		return
 	}
 	reg.add(doc, c)
-	reg.watch(connCtx, c, nil)
 
 	t := time.NewTicker(rate)
 	defer t.Stop()
 	for {
+		readDone := make(chan error, 1)
+		go func() { readDone <- c.readLoop(connCtx, nil) }()
+
+		ready := c.first
+
+	typing:
+		for {
+			select {
+			case <-editCtx.Done():
+
+				go func() {
+					if err := <-readDone; err != nil && connCtx.Err() == nil {
+						reg.fail(err)
+					}
+				}()
+				return
+			case <-readDone:
+				break typing
+			case <-ready:
+				ready = nil
+			case <-t.C:
+				if ready != nil {
+					continue
+				}
+				if err := c.typeOne(connCtx, true); err != nil {
+
+					c.conn.CloseNow()
+					<-readDone
+					break typing
+				}
+			}
+		}
+
+		if editCtx.Err() != nil || connCtx.Err() != nil {
+			return
+		}
+		reg.kicks.Add(1)
 		select {
 		case <-editCtx.Done():
 			return
-		case <-t.C:
-			if err := c.typeOne(connCtx, true); err != nil {
-				reg.fail(err)
-				return
-			}
+		case <-connCtx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		if err := c.connect(connCtx, url, doc, "load"); err != nil {
+			reg.failedReconnects.Add(1)
+			reg.fail(err)
+			return
 		}
 	}
 }
@@ -323,6 +365,7 @@ func main() {
 	docs := flag.Int("docs", 20, "number of documents")
 	duration := flag.Duration("duration", 60*time.Second, "how long clients type")
 	url := flag.String("url", "ws://localhost:8080", "server base URL")
+	rate := flag.Duration("rate", 100*time.Millisecond, "time between keystrokes of each typing client")
 	flag.Parse()
 
 	editCtx, stopEdit := context.WithTimeout(context.Background(), *duration)
@@ -338,7 +381,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runClient(editCtx, connCtx, *url, fmt.Sprintf("load-%d", i%*docs), 100*time.Millisecond, reg)
+			runClient(editCtx, connCtx, *url, fmt.Sprintf("load-%d", i%*docs), *rate, reg)
 		}()
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -381,6 +424,8 @@ func main() {
 
 	fmt.Printf("connections: %d, docs: %d, duration: %s\n", *conns, *docs, *duration)
 	fmt.Printf("latency samples: %d, p50: %s, p95: %s\n", len(samples), percentile(samples, 0.50), percentile(samples, 0.95))
+	fmt.Printf("kicks: %d\n", reg.kicks.Load())
+	fmt.Printf("failed reconnects: %d\n", reg.failedReconnects.Load())
 	fmt.Printf("errors: %d\n", len(errs))
 	counts := make(map[string]int)
 	for _, err := range errs {

@@ -556,3 +556,61 @@ func TestReceiveGarbage(t *testing.T) {
 		_ = d.String()
 	}
 }
+
+// replayOps builds the op log a server would save: five docs type at random
+// positions and sync with each other every 50 inserts; the log is in the order
+// docs[0] applied the ops.
+func replayOps(tb testing.TB, docsN, insertsEach, syncEvery int) []Op {
+	tb.Helper()
+
+	rng := rand.New(rand.NewSource(1))
+	docs := make([]*Doc, docsN)
+	for i := range docs {
+		docs[i] = NewDoc(ClientID(i + 1))
+	}
+
+	var log []Op
+	for done := 0; done < insertsEach; done += syncEvery {
+		batches := make([][]Op, docsN)
+		for i, d := range docs {
+			for k := 0; k < syncEvery; k++ {
+				op, err := d.LocalInsert(rng.Intn(d.Len()+1), rune('a'+rng.Intn(26)))
+				if err != nil {
+					tb.Fatalf("LocalInsert: %v", err)
+				}
+				batches[i] = append(batches[i], op)
+			}
+		}
+		log = append(log, batches[0]...)
+
+		for i, batch := range batches {
+			for j, d := range docs {
+				if i == j {
+					continue
+				}
+				applied := d.Receive(batch...)
+				if j == 0 {
+					log = append(log, applied...)
+				}
+			}
+		}
+	}
+	return log
+}
+
+func BenchmarkReplay30k(b *testing.B) {
+	ops := replayOps(b, 5, 6000, 50)
+	if len(ops) != 30000 {
+		b.Fatalf("want 30000 ops, got %d", len(ops))
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d := NewDoc(1)
+		d.Receive(ops...)
+		if d.PendingLen() != 0 {
+			b.Fatalf("%d ops still pending", d.PendingLen())
+		}
+	}
+}

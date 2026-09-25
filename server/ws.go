@@ -134,11 +134,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"rooms":     rooms,
-		"conns":     conns,
-		"heapMB":    float64(mem.HeapAlloc) / 1e6,
-		"maxItems":  items,
-		"maxLoadMs": float64(load) / float64(time.Millisecond),
+		"rooms":      rooms,
+		"conns":      conns,
+		"heapMB":     float64(mem.HeapAlloc) / 1e6,
+		"maxItems":   items,
+		"maxLoadMs":  float64(load) / float64(time.Millisecond),
+		"writeQueue": s.hub.WriteQueue(),
 	})
 }
 

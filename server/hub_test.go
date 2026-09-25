@@ -1,7 +1,9 @@
 package server
 
 import (
+	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,5 +85,145 @@ func TestLargestRoom(t *testing.T) {
 	}
 	if load < 0 {
 		t.Fatalf("Largest load = %v, want >= 0", load)
+	}
+}
+
+// slowStore wraps Memory: Load sleeps for the "slow" doc, sleeps briefly and
+// then fails for the "bad" doc, and every call is counted.
+type slowStore struct {
+	*store.Memory
+	mu    sync.Mutex
+	loads map[string]int
+}
+
+func newSlowStore() *slowStore {
+	return &slowStore{Memory: store.NewMemory(), loads: make(map[string]int)}
+}
+
+func (s *slowStore) Load(doc string) ([]crdt.Op, error) {
+	s.mu.Lock()
+	s.loads[doc]++
+	s.mu.Unlock()
+
+	switch doc {
+	case "slow":
+		time.Sleep(500 * time.Millisecond)
+	case "bad":
+		time.Sleep(100 * time.Millisecond)
+		return nil, errors.New("load failed")
+	}
+	return s.Memory.Load(doc)
+}
+
+func (s *slowStore) loadCount(doc string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loads[doc]
+}
+
+func newTestHub(st store.Store) *Hub {
+	return NewHub(st, Limits{MaxClients: 100, MaxItems: 1_000_000}, time.Minute)
+}
+
+func TestLoadDoesNotBlockOtherDocs(t *testing.T) {
+	hub := newTestHub(newSlowStore())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, release, err := hub.Acquire("slow"); err == nil {
+			release()
+		}
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	_, release, err := hub.Acquire("fast")
+	if err != nil {
+		t.Fatalf("Acquire fast: %v", err)
+	}
+	release()
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Fatalf("Acquire(fast) took %v while slow was loading, want < 100ms", d)
+	}
+
+	<-done
+}
+
+func TestConcurrentAcquireLoadsOnce(t *testing.T) {
+	st := newSlowStore()
+	hub := newTestHub(st)
+
+	const n = 10
+	rooms := make([]*Room, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			room, release, err := hub.Acquire("slow")
+			if err == nil {
+				defer release()
+			}
+			rooms[i], errs[i] = room, err
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("Acquire %d: %v", i, errs[i])
+		}
+		if rooms[i] != rooms[0] {
+			t.Fatalf("Acquire %d returned a different *Room", i)
+		}
+	}
+	if got := st.loadCount("slow"); got != 1 {
+		t.Fatalf("Load called %d times, want 1", got)
+	}
+}
+
+func TestLoadErrorReachesWaiters(t *testing.T) {
+	st := newSlowStore()
+	hub := newTestHub(st)
+
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, errs[i] = hub.Acquire("bad")
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err == nil {
+			t.Fatalf("Acquire %d: want error, got nil", i)
+		}
+	}
+	if got := st.loadCount("bad"); got != 1 {
+		t.Fatalf("Load called %d times for two concurrent Acquires, want 1", got)
+	}
+
+	hub.mu.Lock()
+	_, left := hub.rooms["bad"]
+	hub.mu.Unlock()
+	if left {
+		t.Fatal("failed doc was left in the hub map")
+	}
+
+	if _, _, err := hub.Acquire("bad"); err == nil {
+		t.Fatal("later Acquire: want error, got nil")
+	}
+	if got := st.loadCount("bad"); got != 2 {
+		t.Fatalf("later Acquire should retry Load: want 2 calls, got %d", got)
 	}
 }

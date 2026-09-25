@@ -176,3 +176,127 @@ func TestAppendDuplicateIsHarmless(t *testing.T) {
 		}
 	})
 }
+
+func TestAppendBatch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "batch.db")
+	sq, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer sq.Close()
+
+	docA := crdt.NewDoc(1)
+	var opsA []crdt.Op
+	for i, r := range "hello" {
+		op, err := docA.LocalInsert(i, r)
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		opsA = append(opsA, op)
+	}
+	docB := crdt.NewDoc(2)
+	var opsB []crdt.Op
+	for i, r := range "world" {
+		op, err := docB.LocalInsert(i, r)
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		opsB = append(opsB, op)
+	}
+
+	// opsA[0] appears twice.
+	batch := map[string][]crdt.Op{
+		"doc-a": append(append([]crdt.Op{}, opsA...), opsA[0]),
+		"doc-b": opsB,
+	}
+	if err := sq.AppendBatch(batch); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+
+	for name, want := range map[string]string{"doc-a": "hello", "doc-b": "world"} {
+		loaded, err := sq.Load(name)
+		if err != nil {
+			t.Fatalf("Load %s: %v", name, err)
+		}
+		fresh := crdt.NewDoc(99)
+		fresh.Receive(loaded...)
+		if fresh.String() != want {
+			t.Fatalf("%s: want %q, got %q", name, want, fresh.String())
+		}
+	}
+
+	var count int
+	if err := sq.db.QueryRow(`SELECT COUNT(*) FROM ops WHERE doc = 'doc-a'`).Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != len(opsA) {
+		t.Fatalf("want %d rows for doc-a (duplicate stored once), got %d", len(opsA), count)
+	}
+}
+
+// replayOps is the same op log as in crdt.BenchmarkReplay30k: five docs type at
+// random positions and sync every syncEvery inserts; the log is in the order
+// docs[0] applied the ops.
+func replayOps(tb testing.TB, docsN, insertsEach, syncEvery int) []crdt.Op {
+	tb.Helper()
+
+	rng := rand.New(rand.NewSource(1))
+	docs := make([]*crdt.Doc, docsN)
+	for i := range docs {
+		docs[i] = crdt.NewDoc(crdt.ClientID(i + 1))
+	}
+
+	var log []crdt.Op
+	for done := 0; done < insertsEach; done += syncEvery {
+		batches := make([][]crdt.Op, docsN)
+		for i, d := range docs {
+			for k := 0; k < syncEvery; k++ {
+				op, err := d.LocalInsert(rng.Intn(d.Len()+1), rune('a'+rng.Intn(26)))
+				if err != nil {
+					tb.Fatalf("LocalInsert: %v", err)
+				}
+				batches[i] = append(batches[i], op)
+			}
+		}
+		log = append(log, batches[0]...)
+
+		for i, batch := range batches {
+			for j, d := range docs {
+				if i == j {
+					continue
+				}
+				applied := d.Receive(batch...)
+				if j == 0 {
+					log = append(log, applied...)
+				}
+			}
+		}
+	}
+	return log
+}
+
+func BenchmarkSQLiteLoad30k(b *testing.B) {
+	ops := replayOps(b, 5, 6000, 50)
+
+	sq, err := OpenSQLite(filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatalf("OpenSQLite: %v", err)
+	}
+	defer sq.Close()
+
+	if err := sq.Append("bench", ops); err != nil {
+		b.Fatalf("Append: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loaded, err := sq.Load("bench")
+		if err != nil {
+			b.Fatalf("Load: %v", err)
+		}
+		if len(loaded) != len(ops) {
+			b.Fatalf("want %d ops, got %d", len(ops), len(loaded))
+		}
+	}
+}

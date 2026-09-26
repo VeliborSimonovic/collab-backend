@@ -5,14 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Collab</title>
     <style>
+        [hidden] { display: none !important; }
         body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
         #editor { width: 100%; height: 400px; box-sizing: border-box; font: 16px/1.4 monospace; }
+        .cards { display: flex; gap: 1rem; flex-wrap: wrap; }
+        .card { flex: 1 1 260px; border: 1px solid #ccc; border-radius: 8px; padding: 1rem; box-sizing: border-box; }
+        .card h2 { margin-top: 0; font-size: 1.1rem; }
+        .card input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem; padding: 0.5rem; font: inherit; }
+        .card button { padding: 0.5rem 1rem; font: inherit; }
+        #landingError { color: #b91c1c; min-height: 1.4em; }
+        .hint { color: #555; font-size: 0.9rem; }
+        #notice { color: #b45309; min-height: 1.4em; }
     </style>
 </head>
 <body>
-    <p id="status">loading…</p>
-    <textarea id="editor" disabled></textarea>
-    <ul id="users"></ul>
+    <section id="landing" hidden>
+        <h1>Collab demo</h1>
+        <p>Open a shared document for up to <span id="landingPeople">4</span> people. It disappears after <span id="landingMinutes">5</span> minutes.</p>
+        <div class="cards">
+            <div class="card">
+                <h2>Start a room</h2>
+                <input id="startName" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
+                <button id="startBtn">Start</button>
+            </div>
+            <div class="card">
+                <h2>Join a room</h2>
+                <input id="joinCode" type="text" inputmode="numeric" placeholder="482 913" autocomplete="off">
+                <input id="joinName" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
+                <button id="joinBtn">Join</button>
+            </div>
+        </div>
+        <p id="landingError"></p>
+    </section>
+
+    <section id="editorView" hidden>
+        <p id="status">loading…</p>
+        <p id="roomInfo" hidden>
+            Room code <strong id="roomCode"></strong>
+            <button id="copyInvite">Copy invite link</button><br>
+            <span class="hint">Share the code or invite link. Don't share your own address bar — that's your personal key.</span>
+        </p>
+        <p id="countdown" hidden></p>
+        <p id="people" hidden></p>
+        <textarea id="editor" disabled></textarea>
+        <p id="charCount" hidden></p>
+        <p id="notice"></p>
+        <ul id="users"></ul>
+    </section>
 
     <script src="wasm_exec.js"></script>
     <script src="app.js"></script>

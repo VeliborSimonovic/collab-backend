@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -291,5 +292,136 @@ func TestHealthDuringBusyRoom(t *testing.T) {
 
 	if rec.Code != 200 {
 		t.Fatalf("/healthz status = %d, want 200", rec.Code)
+	}
+}
+
+func TestTokenExpiryClosesConnection(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := NewHub(store.NewMemory(), NewLimits(), time.Minute)
+	ts := httptest.NewServer(NewServer(hub, nil, NewTokenAuth(pub)).Handler())
+	defer ts.Close()
+
+	// exp is in whole seconds, so now+2 leaves between 1 and 2 s before expiry.
+	tok := Sign(priv, Claims{Sub: "u1", Doc: "A", Role: "editor", Name: "Vevi", Color: "#f60",
+		Exp: time.Now().Unix() + 2})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?doc=A&token=" + tok
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			if ctx.Err() != nil {
+				t.Fatal("server did not close the connection within 4s of the token expiring")
+			}
+			if got := websocket.CloseStatus(err); got != CloseTokenExpired {
+				t.Fatalf("close status = %d, want %d (CloseTokenExpired); err: %v", got, CloseTokenExpired, err)
+			}
+			return
+		}
+	}
+}
+
+func TestDevModeConnectionStaysOpen(t *testing.T) {
+	hub := NewHub(store.NewMemory(), NewLimits(), time.Minute)
+	ts := httptest.NewServer(NewServer(hub, nil, NewDevAuth()).Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?doc=A&name=dev"
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	time.Sleep(1500 * time.Millisecond)
+
+	if _, conns := hub.Stats(); conns != 1 {
+		t.Fatalf("Stats conns = %d after 1.5 s, want 1 (dev mode has no expiry)", conns)
+	}
+}
+
+func dialDev(t *testing.T, ctx context.Context, hub *Hub, setup func(*Server)) *websocket.Conn {
+	t.Helper()
+	srv := NewServer(hub, nil, NewDevAuth())
+	if setup != nil {
+		setup(srv)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws?doc=A&name=dev", nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.CloseNow() })
+	return conn
+}
+
+// readUntilClosed reads until the server closes the connection and returns that error.
+func readUntilClosed(t *testing.T, ctx context.Context, conn *websocket.Conn) error {
+	t.Helper()
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			if ctx.Err() != nil {
+				t.Fatal("server did not close the connection in time")
+			}
+			return err
+		}
+	}
+}
+
+func TestCloseDocFull(t *testing.T) {
+	hub := NewHub(store.NewMemory(), NewLimits(WithMaxText(5)), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn := dialDev(t, ctx, hub, nil)
+
+	d := crdt.NewDoc(1<<20 + 7)
+	var ops []crdt.Op
+	for i := 0; i < 6; i++ {
+		op, err := d.LocalInsert(i, 'a')
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		ops = append(ops, op)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, append([]byte{MsgUpdate}, crdt.EncodeOps(ops)...)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	err := readUntilClosed(t, ctx, conn)
+	if got := websocket.CloseStatus(err); got != CloseDocFull {
+		t.Fatalf("close status = %d, want %d (CloseDocFull); err: %v", got, CloseDocFull, err)
+	}
+}
+
+func TestMaxMessage(t *testing.T) {
+	hub := NewHub(store.NewMemory(), NewLimits(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn := dialDev(t, ctx, hub, func(s *Server) { s.SetMaxMessage(1024) })
+
+	big := make([]byte, 2000)
+	big[0] = MsgUpdate
+	if err := conn.Write(ctx, websocket.MessageBinary, big); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	err := readUntilClosed(t, ctx, conn)
+	if got := websocket.CloseStatus(err); got != websocket.StatusMessageTooBig {
+		t.Fatalf("close status = %d, want %d (message too big); err: %v", got, websocket.StatusMessageTooBig, err)
 	}
 }

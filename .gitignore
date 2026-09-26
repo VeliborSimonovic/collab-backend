@@ -7,3 +7,6 @@ data/
 *.pem
 .env
 scripts/release.sh
+
+deploy/.env
+keys/

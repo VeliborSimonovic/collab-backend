@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"slices"
 	"testing"
+	"unicode/utf8"
 )
 
 func checkInvariants(t *testing.T, d *Doc) {
@@ -613,4 +614,63 @@ func BenchmarkReplay30k(b *testing.B) {
 			b.Fatalf("%d ops still pending", d.PendingLen())
 		}
 	}
+}
+
+func TestCounters(t *testing.T) {
+	t.Run("insert and delete", func(t *testing.T) {
+		a := NewDoc(1)
+		for i, r := range "hello" {
+			if _, err := a.LocalInsert(i, r); err != nil {
+				t.Fatalf("LocalInsert: %v", err)
+			}
+		}
+		for range 2 {
+			if _, err := a.LocalDelete(0); err != nil {
+				t.Fatalf("LocalDelete: %v", err)
+			}
+		}
+
+		if got := a.VisibleLen(); got != 3 {
+			t.Fatalf("VisibleLen = %d, want 3", got)
+		}
+		if got := a.OpCount(); got != 7 {
+			t.Fatalf("OpCount = %d, want 7", got)
+		}
+	})
+
+	t.Run("concurrent double delete", func(t *testing.T) {
+		a, b := NewDoc(1), NewDoc(2)
+
+		var inserts []Op
+		for i, r := range "hello" {
+			op, err := a.LocalInsert(i, r)
+			if err != nil {
+				t.Fatalf("LocalInsert: %v", err)
+			}
+			inserts = append(inserts, op)
+		}
+		b.Receive(inserts...)
+
+		// Both delete the SAME character at the same time.
+		opA, err := a.LocalDelete(1)
+		if err != nil {
+			t.Fatalf("A LocalDelete: %v", err)
+		}
+		opB, err := b.LocalDelete(1)
+		if err != nil {
+			t.Fatalf("B LocalDelete: %v", err)
+		}
+		a.Receive(opB)
+		b.Receive(opA)
+
+		for name, d := range map[string]*Doc{"A": a, "B": b} {
+			want := utf8.RuneCountInString(d.String())
+			if got := d.VisibleLen(); got != want {
+				t.Fatalf("%s: VisibleLen = %d, want %d (the visible text)", name, got, want)
+			}
+			if got := d.VisibleLen(); got != 4 {
+				t.Fatalf("%s: VisibleLen = %d, want 4: the double delete counted twice", name, got)
+			}
+		}
+	})
 }

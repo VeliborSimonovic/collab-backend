@@ -227,3 +227,56 @@ func TestLoadErrorReachesWaiters(t *testing.T) {
 		t.Fatalf("later Acquire should retry Load: want 2 calls, got %d", got)
 	}
 }
+
+func testEvictionStore(t *testing.T, ephemeral bool) (*store.Memory, []crdt.Op, string) {
+	t.Helper()
+
+	st := store.NewMemory()
+	hub := NewHub(st, NewLimits(), 30*time.Millisecond)
+	if ephemeral {
+		hub.EnableEphemeral()
+	}
+
+	room, release, err := hub.Acquire("d")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := room.Edit(0, 0, "hi"); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	release()
+
+	time.Sleep(150 * time.Millisecond)
+
+	ops, err := st.Load("d")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	room, release, err = hub.Acquire("d")
+	if err != nil {
+		t.Fatalf("second Acquire: %v", err)
+	}
+	defer release()
+	return st, ops, room.Text()
+}
+
+func TestEphemeralEvictionDeletes(t *testing.T) {
+	_, ops, text := testEvictionStore(t, true)
+	if len(ops) != 0 {
+		t.Fatalf("store holds %d ops after eviction, want 0", len(ops))
+	}
+	if text != "" {
+		t.Fatalf("reopened doc text = %q, want empty", text)
+	}
+}
+
+func TestEvictionKeepsOpsWithoutEphemeral(t *testing.T) {
+	_, ops, text := testEvictionStore(t, false)
+	if len(ops) != 2 {
+		t.Fatalf("store holds %d ops after eviction, want 2", len(ops))
+	}
+	if text != "hi" {
+		t.Fatalf("reopened doc text = %q, want %q", text, "hi")
+	}
+}

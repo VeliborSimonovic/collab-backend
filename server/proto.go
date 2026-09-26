@@ -2,19 +2,24 @@ package server
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/veliborsimonovic/collab/crdt"
 	"github.com/veliborsimonovic/collab/store"
 )
 
 const (
-	MsgSyncStep1    byte = 1
-	MsgUpdate       byte = 2
-	MsgPresence     byte = 3
-	MsgPresenceGone byte = 4
+	MsgSyncStep1      byte                 = 1
+	MsgUpdate         byte                 = 2
+	MsgPresence       byte                 = 3
+	MsgPresenceGone   byte                 = 4
+	CloseTokenExpired websocket.StatusCode = 4001
+	CloseDocFull      websocket.StatusCode = 4002
+	CloseTooFast      websocket.StatusCode = 4003
 )
 
 func frame(t byte, payload []byte) []byte {
@@ -26,8 +31,9 @@ func frame(t byte, payload []byte) []byte {
 
 var (
 	ErrReadOnly  = errors.New("server: viewer cannot edit")
-	ErrDocTooBig = errors.New("server: document would exceed MaxItems")
+	ErrDocTooBig = errors.New("server: document is full")
 	ErrRoomFull  = errors.New("server: room is at MaxClients")
+	ErrTooFast   = errors.New("server: too many edits")
 )
 
 type Room struct {
@@ -104,6 +110,8 @@ func (r *Room) Join(c *Client) error {
 	}
 
 	r.clients[c] = true
+	c.tokens = float64(r.limits.Burst)
+	c.lastRefill = time.Now()
 	c.push(frame(MsgSyncStep1, crdt.EncodeSV(r.doc.StateVector())))
 	r.clientCount.Add(1)
 	for other := range r.clients {
@@ -163,9 +171,45 @@ func (r *Room) Handle(c *Client, msg []byte) error {
 			return ErrReadOnly
 		}
 
+		if r.limits.Rate > 0 {
+			now := time.Now()
+			c.tokens = math.Min(float64(r.limits.Burst), c.tokens+r.limits.Rate*now.Sub(c.lastRefill).Seconds())
+			c.lastRefill = now
+
+			cost := float64(len(ops))
+			if c.tokens < cost {
+				return ErrTooFast
+			}
+			c.tokens -= cost
+		}
+
+		if r.limits.MaxOps > 0 && r.doc.OpCount()+len(ops) > r.limits.MaxOps {
+			return ErrDocTooBig
+		}
+
+		if r.limits.MaxText > 0 {
+			I := 0
+			D := 0
+			for _, v := range ops {
+				switch v.(type) {
+				case crdt.InsertOp:
+					I++
+
+				case crdt.DeleteOp:
+					D++
+				}
+			}
+
+			if I > D && r.doc.VisibleLen()+I-D > r.limits.MaxText {
+				return ErrDocTooBig
+			}
+
+		}
+
 		if r.doc.Len()+len(ops) > r.limits.MaxItems {
 			return ErrDocTooBig
 		}
+
 		applied := r.doc.Receive(ops...)
 		dropped := r.doc.DropPending()
 		r.itemCount.Store(int64(r.doc.Len()))

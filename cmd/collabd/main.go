@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/veliborsimonovic/collab/demo"
 	"github.com/veliborsimonovic/collab/server"
 	"github.com/veliborsimonovic/collab/store"
 )
@@ -32,6 +33,18 @@ type config struct {
 	dev        bool
 	flush      time.Duration
 	pprof      string
+
+	ephemeral  bool
+	demoKey    string
+	demoTTL    time.Duration
+	trustProxy bool
+	demoPerIP  int
+	demoWindow time.Duration
+	maxText    int
+	maxOps     int
+	rate       float64
+	burst      int
+	maxMessage int
 }
 
 func envString(key, def string) string {
@@ -65,6 +78,18 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
+func envFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		log.Fatalf("%s: invalid number %q", key, v)
+	}
+	return f
+}
+
 func envDuration(key string, def time.Duration) time.Duration {
 	v := os.Getenv(key)
 	if v == "" {
@@ -88,6 +113,18 @@ func loadConfig() config {
 		dev:        envBool("COLLAB_DEV", false),
 		flush:      envDuration("COLLAB_FLUSH", 10*time.Millisecond),
 		pprof:      envString("COLLAB_PPROF", ""),
+
+		ephemeral:  envBool("COLLAB_EPHEMERAL", false),
+		demoKey:    os.Getenv("COLLAB_DEMO_KEY"),
+		demoTTL:    envDuration("COLLAB_DEMO_TTL", 5*time.Minute),
+		trustProxy: envBool("COLLAB_TRUST_PROXY", false),
+		demoPerIP:  envInt("COLLAB_DEMO_ROOMS_PER_IP", 1),
+		demoWindow: envDuration("COLLAB_DEMO_ROOM_WINDOW", time.Hour),
+		maxText:    envInt("COLLAB_MAX_TEXT", 0),
+		maxOps:     envInt("COLLAB_MAX_OPS", 0),
+		rate:       envFloat("COLLAB_RATE", 0),
+		burst:      envInt("COLLAB_BURST", 0),
+		maxMessage: envInt("COLLAB_MAX_MESSAGE", 8<<20),
 	}
 	if raw := os.Getenv("COLLAB_ORIGINS"); raw != "" {
 		for _, o := range strings.Split(raw, ",") {
@@ -101,7 +138,15 @@ func loadConfig() config {
 	flag.BoolVar(&cfg.dev, "dev", cfg.dev, "dev mode: no auth, everyone is an editor; local testing only (env COLLAB_DEV)")
 	flag.DurationVar(&cfg.flush, "flush", cfg.flush, "interval between SQLite write batches (env COLLAB_FLUSH)")
 	flag.StringVar(&cfg.pprof, "pprof", cfg.pprof, "address for the pprof profiling server, empty = off; never expose it publicly (env COLLAB_PPROF)")
+	flag.BoolVar(&cfg.ephemeral, "ephemeral", cfg.ephemeral, "ephemeral mode: documents are dropped when the last client leaves; needs -mem (env COLLAB_EPHEMERAL)")
+	flag.StringVar(&cfg.demoKey, "demo-key", cfg.demoKey, "PEM file with the demo private key, empty = demo off; needs -mem (env COLLAB_DEMO_KEY)")
+	flag.DurationVar(&cfg.demoTTL, "demo-ttl", cfg.demoTTL, "how long a demo room lasts (env COLLAB_DEMO_TTL)")
+	flag.BoolVar(&cfg.trustProxy, "trust-proxy", cfg.trustProxy, "take the client IP from X-Forwarded-For; only behind a reverse proxy (env COLLAB_TRUST_PROXY)")
 	flag.Parse()
+
+	if cfg.rate > 0 && cfg.burst == 0 {
+		cfg.burst = max(cfg.maxText, 100)
+	}
 
 	return cfg
 }
@@ -140,6 +185,27 @@ func main() {
 
 	cfg := loadConfig()
 
+	if cfg.ephemeral && !cfg.mem {
+		log.Fatal("ephemeral mode needs -mem")
+	}
+	var demoPriv ed25519.PrivateKey
+	if cfg.demoKey != "" {
+		if !cfg.mem {
+			log.Fatal("the demo needs -mem")
+		}
+		cfg.ephemeral = true
+
+		var err error
+		demoPriv, err = loadPrivateKey(cfg.demoKey)
+		if err != nil {
+			log.Fatalf("demo key: %v", err)
+		}
+		pub, err := base64.StdEncoding.DecodeString(cfg.publicKey)
+		if err != nil || !demoPriv.Public().(ed25519.PublicKey).Equal(ed25519.PublicKey(pub)) {
+			log.Fatal("demo key does not match COLLAB_PUBLIC_KEY")
+		}
+	}
+
 	var st store.Store
 	if cfg.mem {
 		st = store.NewMemory()
@@ -151,12 +217,45 @@ func main() {
 		st = store.NewBatched(sq, cfg.flush)
 	}
 
-	hub := server.NewHub(st, server.Limits{MaxClients: cfg.maxClients, MaxItems: cfg.maxItems}, cfg.idle)
+	hub := server.NewHub(st, server.Limits{
+		MaxClients: cfg.maxClients,
+		MaxItems:   cfg.maxItems,
+		MaxText:    cfg.maxText,
+		MaxOps:     cfg.maxOps,
+		Rate:       cfg.rate,
+		Burst:      cfg.burst,
+	}, cfg.idle)
+	if cfg.ephemeral {
+		hub.EnableEphemeral()
+	}
 	srv := server.NewServer(hub, cfg.origins, makeAuth(cfg.publicKey, cfg.dev))
+	srv.SetMaxMessage(int64(cfg.maxMessage))
+
+	mux := http.NewServeMux()
+	mux.Handle("/", srv.Handler())
+	if demoPriv != nil {
+		demo.New(demo.Config{
+			Key:          demoPriv,
+			TTL:          cfg.demoTTL,
+			PerIP:        cfg.demoPerIP,
+			CreateWindow: cfg.demoWindow,
+			MaxText:      cfg.maxText,
+			TrustProxy:   cfg.trustProxy,
+		}).Register(mux)
+	}
+
+	switch {
+	case demoPriv != nil:
+		log.Printf("demo mode, rooms last %s", cfg.demoTTL)
+	case cfg.publicKey == "" && cfg.dev:
+		log.Print("dev mode")
+	default:
+		log.Print("token mode")
+	}
 
 	httpSrv := &http.Server{
 		Addr:    cfg.addr,
-		Handler: srv.Handler(),
+		Handler: mux,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

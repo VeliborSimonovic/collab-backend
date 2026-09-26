@@ -16,6 +16,8 @@ type Client struct {
 	kick         func()
 	presence     []byte
 	lastPresence time.Time
+	tokens       float64
+	lastRefill   time.Time
 }
 
 const (
@@ -49,15 +51,23 @@ func (c *Client) Out() <-chan []byte {
 type Limits struct {
 	MaxClients int
 	MaxItems   int
+	MaxText    int
+	MaxOps     int
+	Rate       float64
+	Burst      int
 }
 
 type LimitsOption func(*Limits)
 
 func WithMaxClients(n int) LimitsOption { return func(l *Limits) { l.MaxClients = n } }
 func WithMaxItems(n int) LimitsOption   { return func(l *Limits) { l.MaxItems = n } }
+func WithMaxText(n int) LimitsOption    { return func(l *Limits) { l.MaxText = n } }
+func WithMaxOps(n int) LimitsOption     { return func(l *Limits) { l.MaxOps = n } }
+func WithRate(n float64) LimitsOption   { return func(l *Limits) { l.Rate = n } }
+func WithBurst(n int) LimitsOption      { return func(l *Limits) { l.Burst = n } }
 
 func NewLimits(opts ...LimitsOption) Limits {
-	l := Limits{MaxClients: 100, MaxItems: 1_000_000}
+	l := Limits{MaxClients: 100, MaxItems: 1_000_000, MaxText: 0, MaxOps: 0, Rate: 0, Burst: 0}
 	for _, opt := range opts {
 		opt(&l)
 	}
@@ -114,6 +124,14 @@ func (r *Room) Edit(pos, del int, ins string) error {
 	defer r.mu.Unlock()
 
 	runes := []rune(ins)
+
+	if r.limits.MaxOps > 0 && r.doc.OpCount()+del+len(runes) > r.limits.MaxOps {
+		return ErrDocTooBig
+	}
+
+	if r.limits.MaxText > 0 && len(runes) > del && r.doc.VisibleLen()+len(runes)-del > r.limits.MaxText {
+		return ErrDocTooBig
+	}
 
 	if r.doc.Len()+len(runes) > r.limits.MaxItems {
 		return ErrDocTooBig

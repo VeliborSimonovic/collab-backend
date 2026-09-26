@@ -14,9 +14,10 @@ import (
 )
 
 type Server struct {
-	hub     *Hub
-	origins []string
-	auth    Authenticator
+	hub        *Hub
+	origins    []string
+	auth       Authenticator
+	maxMessage int64
 }
 
 var (
@@ -24,11 +25,20 @@ var (
 	pingTimeout  = 10 * time.Second
 )
 
+const defaultMaxMessage = 8 << 20
+
 func NewServer(hub *Hub, origins []string, auth Authenticator) *Server {
 	return &Server{
-		hub:     hub,
-		origins: origins,
-		auth:    auth,
+		hub:        hub,
+		origins:    origins,
+		auth:       auth,
+		maxMessage: defaultMaxMessage,
+	}
+}
+
+func (s *Server) SetMaxMessage(n int64) {
+	if n > 0 {
+		s.maxMessage = n
 	}
 }
 
@@ -56,7 +66,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.CloseNow()
-	conn.SetReadLimit(8 << 20)
+	conn.SetReadLimit(s.maxMessage)
 
 	ctx := r.Context()
 
@@ -72,6 +82,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		release()
 		conn.Close(websocket.StatusTryAgainLater, "room full")
 		return
+	}
+
+	if claims.Exp > 0 {
+		untilExp := time.Until(time.Unix(claims.Exp, 0))
+		if untilExp <= 0 {
+			conn.Close(CloseTokenExpired, "Token Expired")
+			return
+		}
+
+		t := time.AfterFunc(untilExp, func() { conn.Close(CloseTokenExpired, "token expired") })
+		defer t.Stop()
 	}
 
 	ticker := time.NewTicker(pingInterval)
@@ -118,7 +139,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := room.Handle(c, msg); err != nil {
+			if errors.Is(err, ErrDocTooBig) {
+				conn.Close(CloseDocFull, "document is full")
+				return
+			}
+
+			if errors.Is(err, ErrTooFast) {
+				conn.Close(CloseTooFast, "too many edits")
+				return
+			}
 			conn.Close(websocket.StatusPolicyViolation, "bad message")
+
 			return
 		}
 	}

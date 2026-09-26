@@ -36,8 +36,32 @@ Every setting can be an environment variable or, where noted, a flag. A flag bea
 | `COLLAB_FLUSH` (`-flush`) | `10ms` | How often buffered edits are written to SQLite, in one transaction (Go duration). Longer means fewer writes but a wider [durability window](#durability). |
 | `COLLAB_PPROF` (`-pprof`) | empty (off) | Address for a separate Go profiling server, e.g. `127.0.0.1:6060`. Never on the public port; do not expose it to the internet. In Docker use `-e COLLAB_PPROF=:6060 -p 127.0.0.1:6060:6060`. |
 | `COLLAB_DEV` / `-dev` | off | Dev mode: no auth, anyone can edit. Only used when no key is set (ignored with a warning otherwise). Local testing only. |
+| `COLLAB_EPHEMERAL` / `-ephemeral` | off | Drop a document when its last client leaves. Needs `-mem`. |
+| `COLLAB_DEMO_KEY` / `-demo-key` | empty (demo off) | PEM file with the demo's private key. Needs `-mem`, turns ephemeral mode on, and its public half must equal `COLLAB_PUBLIC_KEY`. See [Public demo](#public-demo). |
+| `COLLAB_DEMO_TTL` / `-demo-ttl` | `5m` | How long a demo room lasts. |
+| `COLLAB_DEMO_ROOMS_PER_IP` | `1` | Rooms one IP may start per window. |
+| `COLLAB_DEMO_ROOM_WINDOW` | `1h` | The window for the setting above. |
+| `COLLAB_TRUST_PROXY` / `-trust-proxy` | off | Take the client IP from the first `X-Forwarded-For` entry. Turn on only behind a reverse proxy, otherwise everyone looks like the proxy's IP. |
+| `COLLAB_MAX_TEXT` | `0` (no limit) | Characters per document (visible ones); a bigger insert closes the connection with 4002. Also shown to the demo page. |
+| `COLLAB_MAX_OPS` | `0` (no limit) | Operations per document. |
+| `COLLAB_RATE` | `0` (no limit) | Operations per second per connection. |
+| `COLLAB_BURST` | `0` | Burst size for `COLLAB_RATE`. With a rate set and burst 0, it becomes the larger of `COLLAB_MAX_TEXT` and 100, so pasting a full document works. |
+| `COLLAB_MAX_MESSAGE` | `8388608` | Largest WebSocket message in bytes (8 MiB). |
 
 An invalid value (for example `COLLAB_MAX_CLIENTS=abc`) stops the server at startup with a message naming the variable.
+
+## Public demo
+
+With `COLLAB_DEMO_KEY` set, opening `/` shows a landing page where anyone can start a shared room or join one with a 6-digit code. A room holds a few people and disappears after `COLLAB_DEMO_TTL`; everybody's session ends together when it does.
+
+- It uses its own key pair: run `collabd keygen`, save the PEM (for example as `demo.pem`) and set `COLLAB_PUBLIC_KEY` to the matching public key. Do not reuse your production key.
+- It needs `-mem`. Nothing is stored, and a document is dropped when its last client leaves.
+- Starting rooms is limited per IP (see `COLLAB_DEMO_ROOMS_PER_IP`), and wrong codes are limited per IP, so codes can't be guessed. Behind a reverse proxy set `COLLAB_TRUST_PROXY=1`.
+
+```
+COLLAB_PUBLIC_KEY=<public key> COLLAB_DEMO_KEY=demo.pem COLLAB_DEMO_TTL=2m \
+COLLAB_MAX_TEXT=500 COLLAB_MAX_OPS=5000 COLLAB_RATE=30 go run ./cmd/collabd -mem
+```
 
 ## Durability
 

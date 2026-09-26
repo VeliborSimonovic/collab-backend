@@ -1,0 +1,22 @@
+(logging) {
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete token
+				}
+			}
+		}
+	}
+}
+
+{$ENGINE_DOMAIN} {
+	import logging
+	reverse_proxy engine:8080
+}
+
+{$DEMO_DOMAIN} {
+	import logging
+	reverse_proxy engine-demo:8080
+}

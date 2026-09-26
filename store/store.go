@@ -29,6 +29,14 @@ func NewMemory() *Memory {
 	return &out
 }
 
+func (m *Memory) Delete(doc string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.ops, doc)
+	delete(m.seen, doc)
+	return nil
+}
+
 func (m *Memory) Load(doc string) ([]crdt.Op, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

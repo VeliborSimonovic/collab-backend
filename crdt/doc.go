@@ -16,6 +16,8 @@ type Doc struct {
 	hintItem   *Item
 	hintIdx    int
 	itemCount  int
+	visible    int
+	opCount    int
 }
 
 type status int
@@ -294,9 +296,13 @@ func (d *Doc) apply(op Op) {
 			RightOrigin: v.RightOrigin,
 			Content:     v.Content,
 		})
+		d.visible++
 		d.itemCount++
 	case DeleteOp:
 		if it := d.items[v.Target]; it != nil {
+			if !it.Deleted {
+				d.visible--
+			}
 			it.Deleted = true
 		}
 
@@ -308,9 +314,18 @@ func (d *Doc) apply(op Op) {
 	id := op.OpID()
 	d.sv[id.Client] = id.Clock + 1
 	d.log[id.Client] = append(d.log[id.Client], op)
+	d.opCount++
 	d.hintItem = d.start
 	d.hintIdx = 0
 
+}
+
+func (d *Doc) VisibleLen() int {
+	return d.visible
+}
+
+func (d *Doc) OpCount() int {
+	return d.opCount
 }
 
 func (d *Doc) StateVector() map[ClientID]uint64 {

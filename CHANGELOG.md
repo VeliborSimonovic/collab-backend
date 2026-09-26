@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.0
+
+- Connections close with 4001 when their token expires
+- Ephemeral mode (`COLLAB_EPHEMERAL` / `-ephemeral`, `-mem` only): a document is dropped when its last client leaves
+- Limits against junk: `COLLAB_MAX_TEXT`, `COLLAB_MAX_OPS`, `COLLAB_RATE` / `COLLAB_BURST` and `COLLAB_MAX_MESSAGE`, with close codes 4002 (document full) and 4003 (too many edits)
+- The public demo: rooms with 6-digit codes (`/demo/config`, `/demo/rooms`, `/demo/rooms/join`), `COLLAB_DEMO_KEY`, `COLLAB_DEMO_TTL` and `COLLAB_TRUST_PROXY`. One room per IP per hour (`COLLAB_DEMO_ROOMS_PER_IP`, `COLLAB_DEMO_ROOM_WINDOW`), and a limit on wrong codes
+- The demo landing page (start / join a room), with the room code and invite link, a countdown, and people and character counters
+- `deploy/` templates and `DEPLOY.md`
+
 ## v0.1.4
 
 - Edits are written to SQLite in batches, one transaction per `COLLAB_FLUSH` interval (default `10ms`), instead of one commit per edit. An edit is now broadcast before it is on disk for at most one interval; see "Durability" in the README. Reading a document flushes pending edits first, and shutdown flushes once more

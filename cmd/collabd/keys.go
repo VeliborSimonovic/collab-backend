@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -38,6 +39,26 @@ func runKeygen() {
 	}
 }
 
+func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in %s", path)
+	}
+	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	priv, ok := k.(ed25519.PrivateKey)
+	if !ok {
+		return nil, errors.New("the key is not an Ed25519 private key")
+	}
+	return priv, nil
+}
+
 func runToken(args []string) {
 	fs := flag.NewFlagSet("token", flag.ExitOnError)
 	keyPath := fs.String("key", "private.pem", "PEM file with the private key")
@@ -53,21 +74,9 @@ func runToken(args []string) {
 		log.Fatal("-doc is required")
 	}
 
-	raw, err := os.ReadFile(*keyPath)
+	priv, err := loadPrivateKey(*keyPath)
 	if err != nil {
 		log.Fatal(err)
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		log.Fatalf("no PEM block found in %s", *keyPath)
-	}
-	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		log.Fatal(err)
-	}
-	priv, ok := k.(ed25519.PrivateKey)
-	if !ok {
-		log.Fatal("the key is not an Ed25519 private key")
 	}
 
 	fmt.Println(server.Sign(priv, server.Claims{

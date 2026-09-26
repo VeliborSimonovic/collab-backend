@@ -127,6 +127,17 @@ Every message is binary: one type byte, then the payload. The biggest message is
 
 An empty message is ignored. An unknown type closes the connection.
 
+The server closes the connection with status 4001 when the token's `exp` is reached. The client needs a new token to reconnect.
+
+The server refuses an update by closing the connection with one of two application status codes:
+
+| Status | Reason text | Meaning |
+|---|---|---|
+| 4002 | `document is full` | the update would go over a limit on the size of the document |
+| 4003 | `too many edits` | the connection sends edits faster than the server allows |
+
+Both mean: your last edit was refused; your local copy now has ops the server doesn't. Don't retry automatically; reload to rejoin with a fresh copy. A reconnect would send the refused ops again in the handshake, and they would be refused again, forever.
+
 ### Handshake
 
 Both sides send a SyncStep1 when the connection opens. Each side answers the other's SyncStep1 with an Update that holds `Diff(their state vector)`, and sends nothing if the diff is empty. After that, every local edit is sent as an Update. A reconnect repeats exactly the same handshake, that is all the recovery there is.
@@ -171,11 +182,12 @@ When someone disconnects, the server sends type 4 to the rest, with that person'
 |---|---|
 | invalid message, unknown type, or an update that leaves ops pending | close 1008 |
 | a viewer sent an Update | close 1008 |
-| the document would go over the item limit | close 1008 |
+| the document would go over a size limit | close 4002 `document is full` |
+| the connection sends edits too fast | close 4003 `too many edits` |
 | the document already has the maximum number of connections | close 1013 `room full` |
 | the client is too slow (256 messages are waiting for it) | connection dropped |
 
-The client should reconnect and resync. The demo page waits 1 second, doubles the wait after each failure, and stops at 10 seconds. It goes back to 1 second after a successful connection.
+The client should reconnect and resync, except after 4001 (get a new token first) and after 4002 or 4003 (reload). The demo page waits 1 second, doubles the wait after each failure, and stops at 10 seconds. It goes back to 1 second after a successful connection.
 
 ## 7. Tokens
 

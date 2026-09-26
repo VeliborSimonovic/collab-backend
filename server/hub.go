@@ -1,11 +1,16 @@
 package server
 
 import (
+	"log"
 	"sync"
 	"time"
 
 	"github.com/veliborsimonovic/collab/store"
 )
+
+type deleter interface {
+	Delete(doc string) error
+}
 
 type entry struct {
 	room  *Room
@@ -16,11 +21,12 @@ type entry struct {
 }
 
 type Hub struct {
-	mu     sync.Mutex
-	rooms  map[string]*entry
-	store  store.Store
-	limits Limits
-	idle   time.Duration
+	mu        sync.Mutex
+	rooms     map[string]*entry
+	store     store.Store
+	limits    Limits
+	idle      time.Duration
+	ephemeral bool
 }
 
 func NewHub(st store.Store, lim Limits, idle time.Duration) *Hub {
@@ -30,6 +36,10 @@ func NewHub(st store.Store, lim Limits, idle time.Duration) *Hub {
 		limits: lim,
 		idle:   idle,
 	}
+}
+
+func (h *Hub) EnableEphemeral() {
+	h.ephemeral = true
 }
 
 func (h *Hub) Largest() (items int, load time.Duration) {
@@ -100,6 +110,11 @@ func (h *Hub) Acquire(doc string) (*Room, func(), error) {
 					defer h.mu.Unlock()
 					if cur, ok := h.rooms[doc]; ok && cur == e && e.refs == 0 {
 						delete(h.rooms, doc)
+						if d, ok := h.store.(deleter); ok && h.ephemeral {
+							if err := d.Delete(doc); err != nil {
+								log.Printf("hub: delete evicted doc %q: %v", doc, err)
+							}
+						}
 					}
 				})
 			}

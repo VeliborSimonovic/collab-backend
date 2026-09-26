@@ -537,3 +537,198 @@ func TestServerEditSurvivesRestart(t *testing.T) {
 		t.Fatalf("Text() = %q, want %q", got, "abcdef")
 	}
 }
+
+func TestRateLimit(t *testing.T) {
+	room, err := OpenRoom("doc-rate", store.NewMemory(), Limits{MaxClients: 100, MaxItems: 1_000_000, Rate: 10, Burst: 20})
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	editor := newFakeClient(t, room, 2, "editor")
+	pos := 0
+	var refused crdt.Op
+	sendOne := func() error {
+		op, err := editor.doc.LocalInsert(pos, 'a')
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		pos++
+		err = room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps([]crdt.Op{op})))
+		if err != nil {
+			refused = op
+		}
+		return err
+	}
+
+	for i := 0; i < 20; i++ {
+		if err := sendOne(); err != nil {
+			t.Fatalf("update %d within the burst: %v", i+1, err)
+		}
+	}
+	if err := sendOne(); !errors.Is(err, ErrTooFast) {
+		t.Fatalf("21st update: want ErrTooFast, got %v", err)
+	}
+
+	// Presence is never counted against the edit rate.
+	if err := room.Handle(editor.client, frame(MsgPresence, []byte(`{"client":1}`))); err != nil {
+		t.Fatalf("presence after the rate limit was hit: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond) // refills about 3 tokens
+
+	// The refused op is in the client's copy, and later ops depend on it: send it again first.
+	if err := room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps([]crdt.Op{refused}))); err != nil {
+		t.Fatalf("resending the refused op after refill: %v", err)
+	}
+	if err := sendOne(); err != nil {
+		t.Fatalf("next update after refill: %v", err)
+	}
+}
+
+func TestBatchCostsOneTokenPerOp(t *testing.T) {
+	room, err := OpenRoom("doc-batch", store.NewMemory(), Limits{MaxClients: 100, MaxItems: 1_000_000, Rate: 1, Burst: 10})
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	editor := newFakeClient(t, room, 2, "editor")
+
+	var ops []crdt.Op
+	for i := 0; i < 11; i++ {
+		op, err := editor.doc.LocalInsert(i, 'a')
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		ops = append(ops, op)
+	}
+	if err := room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps(ops))); !errors.Is(err, ErrTooFast) {
+		t.Fatalf("11 ops with a burst of 10: want ErrTooFast, got %v", err)
+	}
+	if err := room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps(ops[:10]))); err != nil {
+		t.Fatalf("10 ops with a burst of 10: %v", err)
+	}
+}
+
+func TestMaxText(t *testing.T) {
+	room, err := OpenRoom("doc-text", store.NewMemory(), Limits{MaxClients: 100, MaxItems: 1_000_000, MaxText: 10})
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	editor := newFakeClient(t, room, 2, "editor")
+
+	handle := func(ops ...crdt.Op) error {
+		return room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps(ops)))
+	}
+	insert := func(pos int) crdt.Op {
+		op, err := editor.doc.LocalInsert(pos, 'a')
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		return op
+	}
+	del := func(pos int) crdt.Op {
+		op, err := editor.doc.LocalDelete(pos)
+		if err != nil {
+			t.Fatalf("LocalDelete: %v", err)
+		}
+		return op
+	}
+
+	var sent []crdt.Op
+	for i := 0; i < 10; i++ {
+		op := insert(i)
+		sent = append(sent, op)
+		if err := handle(op); err != nil {
+			t.Fatalf("insert %d within the limit: %v", i+1, err)
+		}
+	}
+
+	// A refused op leaves a gap in its author's clock, so the refused characters come
+	// from a second copy of the document; the editor's own ops carry on unaffected.
+	other := crdt.NewDoc(3)
+	other.Receive(sent...)
+	tooMany := func() error {
+		op, err := other.LocalInsert(0, 'z')
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		return room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps([]crdt.Op{op})))
+	}
+
+	if err := tooMany(); !errors.Is(err, ErrDocTooBig) {
+		t.Fatalf("11th character: want ErrDocTooBig, got %v", err)
+	}
+	if err := handle(del(0), del(0), del(0)); err != nil {
+		t.Fatalf("deleting on a full document: %v", err)
+	}
+	if err := handle(insert(0), insert(0), insert(0)); err != nil {
+		t.Fatalf("inserting as many as were deleted: %v", err)
+	}
+	if err := tooMany(); !errors.Is(err, ErrDocTooBig) {
+		t.Fatalf("full again: want ErrDocTooBig, got %v", err)
+	}
+	if got := room.doc.VisibleLen(); got != 10 {
+		t.Fatalf("VisibleLen = %d, want 10", got)
+	}
+}
+
+func TestMaxOpsCatchesChurn(t *testing.T) {
+	room, err := OpenRoom("doc-ops", store.NewMemory(), Limits{MaxClients: 100, MaxItems: 1_000_000, MaxOps: 20})
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	editor := newFakeClient(t, room, 2, "editor")
+
+	// Type 5, delete 5, type 5, delete 5: 20 ops, and the text stays empty.
+	for round := 0; round < 2; round++ {
+		var ins []crdt.Op
+		for i := 0; i < 5; i++ {
+			op, err := editor.doc.LocalInsert(i, 'a')
+			if err != nil {
+				t.Fatalf("LocalInsert: %v", err)
+			}
+			ins = append(ins, op)
+		}
+		editor.send(ins)
+
+		var dels []crdt.Op
+		for i := 0; i < 5; i++ {
+			op, err := editor.doc.LocalDelete(0)
+			if err != nil {
+				t.Fatalf("LocalDelete: %v", err)
+			}
+			dels = append(dels, op)
+		}
+		editor.send(dels)
+	}
+	if got := room.Text(); got != "" {
+		t.Fatalf("text = %q, want empty", got)
+	}
+
+	op, err := editor.doc.LocalInsert(0, 'z')
+	if err != nil {
+		t.Fatalf("LocalInsert: %v", err)
+	}
+	err = room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps([]crdt.Op{op})))
+	if !errors.Is(err, ErrDocTooBig) {
+		t.Fatalf("21st op: want ErrDocTooBig, got %v", err)
+	}
+}
+
+func TestPasteWithinBurst(t *testing.T) {
+	room, err := OpenRoom("doc-paste", store.NewMemory(), Limits{MaxClients: 100, MaxItems: 1_000_000, Rate: 30, Burst: 600})
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	editor := newFakeClient(t, room, 2, "editor")
+
+	var ops []crdt.Op
+	for i := 0; i < 500; i++ {
+		op, err := editor.doc.LocalInsert(i, 'a')
+		if err != nil {
+			t.Fatalf("LocalInsert: %v", err)
+		}
+		ops = append(ops, op)
+	}
+	if err := room.Handle(editor.client, frame(MsgUpdate, crdt.EncodeOps(ops))); err != nil {
+		t.Fatalf("pasting 500 characters in one update with a burst of 600: %v", err)
+	}
+}

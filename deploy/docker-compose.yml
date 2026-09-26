@@ -1,0 +1,65 @@
+name: collab
+
+services:
+  engine:
+    image: collab:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      COLLAB_PUBLIC_KEY: ${COLLAB_PUBLIC_KEY:?set COLLAB_PUBLIC_KEY in .env}
+      COLLAB_ORIGINS: ${COLLAB_ORIGINS:-}
+    volumes:
+      - engine-data:/data
+    mem_limit: 1g
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    restart: unless-stopped
+
+  engine-demo:
+    image: collab:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["-mem"]
+    environment:
+      COLLAB_PUBLIC_KEY: ${DEMO_PUBLIC_KEY:?set DEMO_PUBLIC_KEY in .env}
+      COLLAB_DEMO_KEY: /keys/demo.pem
+      COLLAB_TRUST_PROXY: "1"
+      COLLAB_IDLE: 1m
+      COLLAB_MAX_CLIENTS: "8"
+      COLLAB_MAX_TEXT: "500"
+      COLLAB_MAX_OPS: "5000"
+      COLLAB_MAX_ITEMS: "5000"
+      COLLAB_RATE: "30"
+      COLLAB_BURST: "600"
+      COLLAB_MAX_MESSAGE: "65536"
+      GOMEMLIMIT: 200MiB
+    volumes:
+      - ../keys/demo.pem:/keys/demo.pem:ro
+    mem_limit: 256m
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ENGINE_DOMAIN: ${ENGINE_DOMAIN:?set ENGINE_DOMAIN in .env}
+      DEMO_DOMAIN: ${DEMO_DOMAIN:?set DEMO_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - engine
+      - engine-demo
+    restart: unless-stopped
+
+volumes:
+  engine-data:
+  caddy-data:
+  caddy-config:

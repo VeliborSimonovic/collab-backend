@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0
 
 - CodeMirror 6 editor replaces the textarea: line numbers, markdown highlighting, line wrapping
 - Presence carets with names, drawn as editor decorations

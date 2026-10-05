@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- CodeMirror 6 editor replaces the textarea: line numbers, markdown highlighting, line wrapping
+- Presence carets with names, drawn as editor decorations
+- The character limit is enforced by a change filter: an edit that would exceed it never enters the document and no op is sent
+- New `make web` step builds `web/editor.js` with esbuild; the bundle is committed and CI fails when it is stale
+
 ## v0.2.0
 
 - Connections close with 4001 when their token expires

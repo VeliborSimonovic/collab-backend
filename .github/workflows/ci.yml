@@ -12,6 +12,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
       - run: make wasm
+      - run: make web
+      - name: Check web/editor.js is committed
+        run: git diff --exit-code web/editor.js || (echo "run make web and commit web/editor.js" && exit 1)
       - run: go vet ./...
       - run: go test -race ./...

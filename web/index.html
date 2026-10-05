@@ -5,22 +5,77 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Collab</title>
     <style>
+        :root {
+            --bg: #f5f6fa; --surface: #fff; --border: #e3e6ee; --text: #1c2030; --muted: #6b7185;
+            --accent: #5b5bf0; --accent-dark: #4646d6; --warn: #b45309; --danger: #c0262d;
+            --radius: 12px; --shadow: 0 1px 2px rgba(20,24,40,.05), 0 8px 24px rgba(20,24,40,.06);
+        }
+        * { box-sizing: border-box; }
         [hidden] { display: none !important; }
-        body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
-        #editor { width: 100%; height: 400px; box-sizing: border-box; font: 16px/1.4 monospace; }
-        .cards { display: flex; gap: 1rem; flex-wrap: wrap; }
-        .card { flex: 1 1 260px; border: 1px solid #ccc; border-radius: 8px; padding: 1rem; box-sizing: border-box; }
-        .card h2 { margin-top: 0; font-size: 1.1rem; }
-        .card input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem; padding: 0.5rem; font: inherit; }
-        .card button { padding: 0.5rem 1rem; font: inherit; }
-        #landingError { color: #b91c1c; min-height: 1.4em; }
-        .hint { color: #555; font-size: 0.9rem; }
-        #notice { color: #b45309; min-height: 1.4em; }
+        body {
+            margin: 0; min-height: 100vh; color: var(--text); background: var(--bg);
+            font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+            background-image: radial-gradient(1200px 400px at 50% -200px, #e4e4ff 0%, transparent 70%);
+        }
+        main { max-width: 860px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+        h1 { font-size: 2rem; letter-spacing: -.02em; margin: 0 0 .5rem; }
+        p { margin: 0 0 1rem; }
+        a { color: var(--accent); }
+
+        .brand { display: flex; align-items: center; gap: .6rem; font-weight: 700; letter-spacing: -.01em; margin-bottom: 1.5rem; }
+        .brand i { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #7c7cff, #5b5bf0); display: inline-block; }
+
+        #landing > p { color: var(--muted); font-size: 1.05rem; max-width: 52ch; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.4rem; box-shadow: var(--shadow); }
+        .card h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+        input[type=text] {
+            display: block; width: 100%; margin-bottom: .6rem; padding: .65rem .8rem; font: inherit; color: inherit;
+            background: #fafbfe; border: 1px solid var(--border); border-radius: 8px; outline: none;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        input[type=text]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,91,240,.18); }
+        button {
+            padding: .6rem 1.1rem; font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
+            border: 1px solid transparent; color: #fff; background: var(--accent); transition: background .15s, transform .05s;
+        }
+        button:hover { background: var(--accent-dark); }
+        button:active { transform: translateY(1px); }
+        button:disabled { opacity: .6; cursor: default; }
+        #landingError { color: var(--danger); min-height: 1.5em; margin-top: 1rem; }
+
+        #status { display: inline-flex; align-items: center; gap: .5rem; color: var(--muted); font-size: .9rem; margin-bottom: .75rem; }
+        #roomInfo {
+            display: flex; flex-wrap: wrap; align-items: center; gap: .6rem .9rem; margin-bottom: 1rem; padding: .9rem 1rem;
+            background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+        }
+        #roomInfo strong { font: 700 1.25rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; background: #eef; padding: .35rem .6rem; border-radius: 8px; }
+        #roomInfo .hint { flex-basis: 100%; }
+        #roomInfo button { padding: .4rem .8rem; font-size: .85rem; }
+        .hint { color: var(--muted); font-size: .85rem; }
+        .pills { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .9rem; }
+        #countdown, #people {
+            display: inline-block; margin: 0; padding: .25rem .75rem; border-radius: 999px; font-size: .85rem; font-weight: 600;
+            background: var(--surface); border: 1px solid var(--border); color: var(--text);
+        }
+        #countdown { color: var(--warn); }
+        #editor { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+        #editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,91,240,.15), var(--shadow); }
+        .meta { display: flex; justify-content: space-between; gap: 1rem; margin-top: .6rem; min-height: 1.5em; font-size: .85rem; }
+        #charCount { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+        #notice { margin: 0; color: var(--warn); font-weight: 600; }
+        #users { list-style: none; padding: 0; margin: 1rem 0 0; display: flex; flex-wrap: wrap; gap: .5rem; }
+        #users li { display: inline-flex; align-items: center; padding: .3rem .75rem; font-size: .85rem; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; }
+
+        .cm-remote-caret { border-left: 2px solid; margin-left: -1px; position: relative; display: inline-block; height: 1.2em; width: 0; pointer-events: none; }
+        .cm-remote-name { position: absolute; top: -1.35em; left: -2px; font: 600 11px/1.3 -apple-system, "Segoe UI", sans-serif; color: #fff; white-space: nowrap; padding: 0 6px; border-radius: 4px; background: inherit; pointer-events: none; }
     </style>
 </head>
 <body>
+<main>
+    <div class="brand"><i></i>Collab</div>
     <section id="landing" hidden>
-        <h1>Collab demo</h1>
+        <h1>Write together, live.</h1>
         <p>Open a shared document for up to <span id="landingPeople">4</span> people. It disappears after <span id="landingMinutes">5</span> minutes.</p>
         <div class="cards">
             <div class="card">
@@ -45,15 +100,15 @@
             <button id="copyInvite">Copy invite link</button><br>
             <span class="hint">Share the code or invite link. Don't share your own address bar — that's your personal key.</span>
         </p>
-        <p id="countdown" hidden></p>
-        <p id="people" hidden></p>
-        <textarea id="editor" disabled></textarea>
-        <p id="charCount" hidden></p>
-        <p id="notice"></p>
+        <div class="pills"><p id="countdown" hidden></p><p id="people" hidden></p></div>
+        <div id="editor"></div>
+        <div class="meta"><p id="notice"></p><p id="charCount" hidden></p></div>
         <ul id="users"></ul>
     </section>
 
+</main>
     <script src="wasm_exec.js"></script>
+    <script src="editor.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

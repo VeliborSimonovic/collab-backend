@@ -50,6 +50,10 @@ Every setting can be an environment variable or, where noted, a flag. A flag bea
 
 An invalid value (for example `COLLAB_MAX_CLIENTS=abc`) stops the server at startup with a message naming the variable.
 
+## Building the web assets
+
+The browser editor (CodeMirror 6) is bundled into `web/editor.js`, which is committed. Run `make web` only when you change `web/src/` or upgrade CodeMirror; it needs Node 22 (`npm ci` + esbuild). The Docker build and `go build` do not need Node. CI runs `make web` and fails if `web/editor.js` differs from what is committed.
+
 ## Public demo
 
 With `COLLAB_DEMO_KEY` set, opening `/` shows a landing page where anyone can start a shared room or join one with a 6-digit code. A room holds a few people and disappears after `COLLAB_DEMO_TTL`; everybody's session ends together when it does.

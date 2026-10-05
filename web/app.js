@@ -4,7 +4,7 @@ let doc = null;
 let ws = null;
 let myId = 0;
 let name = "";
-let oldText = [];
+let editor = null;
 const remoteCursors = new Map();
 let retryMs = 1000;
 let lastPresence = 0;
@@ -21,7 +21,7 @@ let countdownTimer = null;
 let noticeTimer = null;
 
 const statusEl = document.getElementById("status");
-const editor = document.getElementById("editor");
+const editorEl = document.getElementById("editor");
 const usersEl = document.getElementById("users");
 const landingEl = document.getElementById("landing");
 const editorViewEl = document.getElementById("editorView");
@@ -48,68 +48,6 @@ function send(type, bytes) {
   }
 }
 
-function toCodepointIndex(text, utf16Offset) {
-  return Array.from(text.slice(0, utf16Offset)).length;
-}
-
-function toUtf16Offset(text, cpIndex) {
-  return Array.from(text).slice(0, cpIndex).join("").length;
-}
-
-function diffText(oldArr, newArr) {
-  const minLen = Math.min(oldArr.length, newArr.length);
-  let prefix = 0;
-  while (prefix < minLen && oldArr[prefix] === newArr[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < minLen - prefix &&
-    oldArr[oldArr.length - 1 - suffix] === newArr[newArr.length - 1 - suffix]
-  ) suffix++;
-  return {
-    prefix,
-    removed: oldArr.length - prefix - suffix,
-    inserted: newArr.slice(prefix, newArr.length - suffix).join(""),
-  };
-}
-
-function onInput() {
-  const newArr = Array.from(editor.value);
-  const { prefix, removed, inserted } = diffText(oldText, newArr);
-  if (maxText > 0 && newArr.length > maxText && newArr.length > oldText.length) {
-    editor.value = oldText.join("");
-    showNotice(`Document is full (${maxText} characters)`);
-    return;
-  }
-  if (removed > 0) send(2, doc.del(prefix, removed));
-  if (inserted !== "") send(2, doc.insert(prefix, inserted));
-  oldText = newArr;
-  updateCharCount();
-  sendPresence();
-}
-
-function applyRemote(payload) {
-  const text = editor.value;
-  const startAnchor = doc.cursorId(toCodepointIndex(text, editor.selectionStart));
-  const endAnchor = doc.cursorId(toCodepointIndex(text, editor.selectionEnd));
-
-  const err = doc.apply(payload);
-  if (typeof err === "string") console.error(err);
-
-  const newText = doc.text();
-  editor.value = newText;
-  oldText = Array.from(newText);
-
-  if (startAnchor !== null && endAnchor !== null) {
-    const s = doc.cursorPos(startAnchor[0], startAnchor[1]);
-    const e = doc.cursorPos(endAnchor[0], endAnchor[1]);
-    if (s >= 0 && e >= 0) {
-      editor.setSelectionRange(toUtf16Offset(newText, s), toUtf16Offset(newText, e));
-    }
-  }
-  renderUsers();
-  updateCharCount();
-}
-
 function sendPresence() {
   const wait = 100 - (Date.now() - lastPresence);
   if (wait > 0) {
@@ -121,17 +59,16 @@ function sendPresence() {
     }
     return;
   }
-  if (!doc) return;
-  const text = editor.value;
-  const anchor = doc.cursorId(toCodepointIndex(text, editor.selectionStart));
-  const head = doc.cursorId(toCodepointIndex(text, editor.selectionEnd));
-  if (anchor === null || head === null) return;
+  if (!doc || !editor) return;
+  const cur = editor.localCursor();
+  if (cur === null) return;
+  const { anchor, head } = cur;
   lastPresence = Date.now();
   send(3, encoder.encode(JSON.stringify({ client: myId, anchor, head })));
 }
 
 function updateCharCount() {
-  if (maxText > 0) charCountEl.textContent = `${oldText.length} / ${maxText}`;
+  if (maxText > 0 && editor) charCountEl.textContent = `${editor.charCount()} / ${maxText}`;
 }
 
 function showNotice(msg) {
@@ -167,7 +104,7 @@ function renderUsers() {
     const li = document.createElement("li");
     const dot = document.createElement("span");
     dot.style.cssText =
-      "display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;";
+      "display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;flex:none;";
     dot.style.background = u.color;
     const pos = u.head ? doc.cursorPos(u.head[0], u.head[1]) : -1;
     li.append(dot, `${u.name}: ${pos < 0 ? "position unknown" : "at position " + pos}`);
@@ -185,17 +122,21 @@ function onMessage(ev) {
       if (role !== "viewer") send(2, doc.diff(payload));
       break;
     case 2:
-      applyRemote(payload);
+      editor.applyRemote(payload);
+      renderUsers();
+      updateCharCount();
       break;
     case 3: {
       const p = JSON.parse(decoder.decode(payload));
       remoteCursors.set(p.client, { name: p.name, color: p.color, head: p.head });
+      editor.setRemoteCursors([...remoteCursors.values()]);
       renderUsers();
       break;
     }
     case 4: {
       const p = JSON.parse(decoder.decode(payload));
       remoteCursors.delete(p.client);
+      editor.setRemoteCursors([...remoteCursors.values()]);
       renderUsers();
       break;
     }
@@ -219,9 +160,10 @@ function connect() {
   ws.onclose = (ev) => {
     if (ev.code === 4001 || ev.code === 4002 || ev.code === 4003) {
       remoteCursors.clear();
+      editor.setRemoteCursors([]);
+      editor.setEditable(false);
       renderUsers();
       if (ev.code === 4001) {
-        editor.readOnly = true;
         clearInterval(countdownTimer);
         showEnded("Demo ended — thanks for trying it!");
       } else if (ev.code === 4002) {
@@ -233,6 +175,7 @@ function connect() {
     }
     statusEl.textContent = `offline, reconnecting in ${retryMs / 1000} s (you can keep typing)`;
     remoteCursors.clear();
+    editor.setRemoteCursors([]);
     renderUsers();
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10000);
@@ -333,7 +276,7 @@ async function start() {
     }
   }
   if (expMs > 0 && expMs <= Date.now()) {
-    editor.hidden = true;
+    editorEl.hidden = true;
     showEnded("This demo has ended.");
     return;
   }
@@ -368,22 +311,25 @@ async function start() {
   if (maxPeople > 0) peopleEl.hidden = false;
   if (maxText > 0) {
     charCountEl.hidden = false;
-    editor.maxLength = maxText;
   }
 
-  if (role === "viewer") editor.readOnly = true;
   document.title = `${docId} · ${name} (${role})`;
   doc = yata.newDoc(myId);
-  oldText = [];
+  editor = CollabEditor.mount({
+    parent: editorEl,
+    doc,
+    maxText,
+    onLocalOps: (bytes) => {
+      send(2, bytes);
+      updateCharCount();
+    },
+    onCursor: sendPresence,
+    onLimitHit: () => showNotice(`Document is full (${maxText} characters)`),
+  });
+  if (role === "viewer") editor.setEditable(false);
   renderUsers();
   updateCharCount();
 
-  editor.addEventListener("input", onInput);
-  editor.addEventListener("click", sendPresence);
-  editor.addEventListener("keyup", sendPresence);
-  document.addEventListener("selectionchange", sendPresence);
-
-  editor.disabled = false;
   connect();
 }
 

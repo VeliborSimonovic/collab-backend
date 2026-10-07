@@ -9,6 +9,7 @@ func TestVectors(t *testing.T) {
 	insertL := InsertOp{ID: ID{3, 0}, Origin: StartID, RightOrigin: EndID, Content: 'l'}
 	deleteL := DeleteOp{ID: ID{3, 1}, Target: ID{3, 0}}
 	insertE := InsertOp{ID: ID{3, 0}, Origin: StartID, RightOrigin: EndID, Content: 'é'}
+	mapSet := InsertOp{ID: ID{3, 0}, Origin: StartID, RightOrigin: EndID, Parent: RootParent("m", KindMap), Key: "k", CKind: ContentJSON, JSON: []byte("1")}
 
 	tests := []struct {
 		name string
@@ -18,6 +19,7 @@ func TestVectors(t *testing.T) {
 		{"insert l", EncodeOps([]Op{insertL}), "01010300000000016c"},
 		{"insert l then delete", EncodeOps([]Op{insertL, deleteL}), "02010300000000016c0203010300"},
 		{"insert é", EncodeOps([]Op{insertE}), "0101030000000001e901"},
+		{"map set k = 1", EncodeOps([]Op{mapSet}), "010303000000000100016d02016b010131"},
 		{"state vector {3: 2}", EncodeSV(map[ClientID]uint64{3: 2}), "010302"},
 	}
 

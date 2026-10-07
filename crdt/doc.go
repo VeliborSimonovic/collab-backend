@@ -1,6 +1,7 @@
 package crdt
 
 import (
+	"encoding/json"
 	"maps"
 	"strings"
 )
@@ -9,15 +10,12 @@ type Doc struct {
 	Client     ClientID
 	clock      uint64
 	items      map[ID]*Item
-	start, end *Item
 	sv         map[ClientID]uint64
 	log        map[ClientID][]Op
 	pending    []Op
-	hintItem   *Item
-	hintIdx    int
 	itemCount  int
-	visible    int
 	opCount    int
+	containers map[Parent]*container
 }
 
 type status int
@@ -33,91 +31,44 @@ func NewDoc(client ClientID) *Doc {
 		panic("Client is 0")
 	}
 
-	start := &Item{ID: StartID}
-	end := &Item{ID: EndID}
-
-	start.right = end
-	end.left = start
-
 	d := &Doc{
 		Client: client,
 		items:  make(map[ID]*Item),
 		sv:     make(map[ClientID]uint64),
 		log:    make(map[ClientID][]Op),
-		start:  start,
-		end:    end,
 	}
 
-	d.items[StartID] = start
-	d.items[EndID] = end
-	d.hintItem = d.start
-	d.hintIdx = 0
+	d.containers = make(map[Parent]*container)
+	d.containers[DefaultText()] = &container{kind: KindText, list: newSeq()}
 
 	return d
 }
 
+func (d *Doc) text() *seq {
+	return d.containers[DefaultText()].list
+}
+
 func (d *Doc) LocalInsert(pos int, r rune) (InsertOp, error) {
-
-	if pos < 0 {
-		return InsertOp{}, ErrOutOfRange
+	ops, err := d.TextInsert(DefaultText(), pos, string(r))
+	if err != nil {
+		return InsertOp{}, err
 	}
-
-	origin := d.start
-
-	if pos > 0 {
-		origin = d.visibleAt(pos - 1)
-		if origin == nil {
-			return InsertOp{}, ErrOutOfRange
-		}
-	}
-
-	right := origin.right
-
-	op := InsertOp{
-		ID:          ID{Client: d.Client, Clock: d.clock},
-		Origin:      origin.ID,
-		RightOrigin: right.ID,
-		Content:     r,
-	}
-	d.clock++
-
-	d.apply(op)
-
-	d.hintItem = d.items[op.ID]
-	d.hintIdx = pos
-	return op, nil
-
+	return ops[0].(InsertOp), nil
 }
 
 func (d *Doc) LocalDelete(pos int) (DeleteOp, error) {
-	if pos < 0 {
-		return DeleteOp{}, ErrOutOfRange
+	ops, err := d.TextDelete(DefaultText(), pos, 1)
+	if err != nil {
+		return DeleteOp{}, err
 	}
-
-	target := d.visibleAt(pos)
-
-	if target == nil {
-		return DeleteOp{}, ErrOutOfRange
-	}
-
-	op := DeleteOp{
-		ID:     ID{Client: d.Client, Clock: d.clock},
-		Target: target.ID,
-	}
-
-	d.clock++
-
-	d.apply(op)
-
-	d.hintItem = d.items[op.Target]
-	d.hintIdx = pos
-	return op, nil
+	return ops[0].(DeleteOp), nil
 }
 
 func (d *Doc) String() string {
 	var b strings.Builder
+	s := d.text()
 
-	for it := d.start.right; it != d.end; it = it.right {
+	for it := s.start.right; it != s.end; it = it.right {
 		if !it.Deleted {
 			b.WriteRune(it.Content)
 		}
@@ -129,10 +80,11 @@ func (d *Doc) String() string {
 }
 
 func (d *Doc) Order() []ID {
+	s := d.text()
 
-	arr := make([]ID, 0, len(d.items)-2)
+	arr := make([]ID, 0, len(d.items))
 
-	for it := d.start.right; it != d.end; it = it.right {
+	for it := s.start.right; it != s.end; it = it.right {
 		arr = append(arr, it.ID)
 	}
 
@@ -140,42 +92,20 @@ func (d *Doc) Order() []ID {
 
 }
 
-func (d *Doc) visibleAt(k int) *Item {
-	if k >= d.hintIdx {
-		item := d.hintItem
-		idx := d.hintIdx
-		for item != d.end {
-			visible := !item.Deleted && item != d.start
-			if visible && idx == k {
-				return item
-			}
-			if visible {
-				idx++
-			}
-			item = item.right
-		}
-		return nil
+func (d *Doc) resolve(id ID, s *seq) *Item {
+	switch id {
+	case StartID:
+		return s.start
+	case EndID:
+		return s.end
+	default:
+		return d.items[id]
 	}
-
-	item := d.hintItem
-	idx := d.hintIdx
-	for item != d.start {
-		item = item.left
-		visible := !item.Deleted && item != d.start
-		if visible {
-			idx--
-		}
-		if visible && idx == k {
-			return item
-		}
-	}
-	return nil
 }
 
-func (d *Doc) integrate(item *Item) {
-
-	var left = d.items[item.Origin]
-	var right = d.items[item.RightOrigin]
+func (d *Doc) integrate(item *Item, s *seq) {
+	left := d.resolve(item.Origin, s)
+	right := d.resolve(item.RightOrigin, s)
 
 	if left.right == right {
 		d.items[item.ID] = item
@@ -191,7 +121,7 @@ func (d *Doc) integrate(item *Item) {
 	scanned := make(map[ID]bool)
 	conflicting := make(map[ID]bool)
 
-	for o = left.right; o != right && o != d.end; o = o.right {
+	for o = left.right; o != right && o != s.end; o = o.right {
 		scanned[o.ID] = true
 		conflicting[o.ID] = true
 
@@ -249,6 +179,60 @@ func (d *Doc) Receive(ops ...Op) (applied []Op) {
 
 }
 
+func (d *Doc) checkInsert(op InsertOp) status {
+	if !op.Parent.IsRoot() && d.items[op.Parent.Item] == nil {
+		return notReady
+	}
+
+	k, ok := d.kindOf(op.Parent)
+	if !ok {
+		return duplicate
+	}
+
+	switch k {
+	case KindText:
+		if op.CKind != ContentRune || op.Key != "" {
+			return duplicate
+		}
+	case KindArray:
+		if (op.CKind != ContentJSON && op.CKind != ContentType) || op.Key != "" {
+			return duplicate
+		}
+	case KindMap:
+		if (op.CKind != ContentJSON && op.CKind != ContentType) || op.Key == "" {
+			return duplicate
+		}
+	default:
+		return duplicate
+	}
+
+	if op.CKind == ContentJSON {
+		if !json.Valid(op.JSON) || len(op.JSON) > 64<<10 {
+			return duplicate
+		}
+	}
+	if op.CKind == ContentType {
+		if op.Type != KindText && op.Type != KindArray && op.Type != KindMap {
+			return duplicate
+		}
+	}
+
+	for _, id := range [2]ID{op.Origin, op.RightOrigin} {
+		if id == StartID || id == EndID {
+			continue
+		}
+		it := d.items[id]
+		if it == nil {
+			return notReady
+		}
+		if it.Parent != op.Parent || it.Key != op.Key {
+			return duplicate
+		}
+	}
+
+	return ready
+}
+
 func (d *Doc) readiness(op Op) status {
 	id := op.OpID()
 
@@ -269,9 +253,7 @@ func (d *Doc) readiness(op Op) status {
 		if o.Origin == EndID || o.RightOrigin == StartID {
 			return duplicate
 		}
-		if d.items[o.Origin] == nil || d.items[o.RightOrigin] == nil {
-			return notReady
-		}
+		return d.checkInsert(o)
 	case DeleteOp:
 		if o.Target == StartID || o.Target == EndID {
 			return duplicate
@@ -290,18 +272,41 @@ func (d *Doc) apply(op Op) {
 
 	switch v := op.(type) {
 	case InsertOp:
-		d.integrate(&Item{
+		item := &Item{
 			ID:          v.ID,
 			Origin:      v.Origin,
 			RightOrigin: v.RightOrigin,
 			Content:     v.Content,
-		})
-		d.visible++
+			Parent:      v.Parent,
+			Key:         v.Key,
+			CKind:       v.CKind,
+			JSON:        v.JSON,
+			Type:        v.Type,
+		}
+
+		c := d.container(v.Parent)
+		s := d.seqFor(c, v.Key)
+
+		d.integrate(item, s)
+		d.items[v.ID] = item
+		item.seq = s
+
+		s.n++
+		s.hintItem = s.start
+		s.hintIdx = 0
+
+		if v.CKind == ContentType {
+			d.containers[ItemParent(v.ID)] = &container{kind: v.Type, list: newSeq()}
+		}
+
 		d.itemCount++
 	case DeleteOp:
 		if it := d.items[v.Target]; it != nil {
 			if !it.Deleted {
-				d.visible--
+				it.Deleted = true
+				it.seq.n--
+				it.seq.hintItem = it.seq.start
+				it.seq.hintIdx = 0
 			}
 			it.Deleted = true
 		}
@@ -315,13 +320,15 @@ func (d *Doc) apply(op Op) {
 	d.sv[id.Client] = id.Clock + 1
 	d.log[id.Client] = append(d.log[id.Client], op)
 	d.opCount++
-	d.hintItem = d.start
-	d.hintIdx = 0
+
+	s := d.text()
+	s.hintItem = s.start
+	s.hintIdx = 0
 
 }
 
 func (d *Doc) VisibleLen() int {
-	return d.visible
+	return d.text().n
 }
 
 func (d *Doc) OpCount() int {
@@ -365,6 +372,100 @@ func (d *Doc) ResumeClock() {
 }
 
 func (d *Doc) Len() int {
-	return d.itemCount
 
+	return len(d.items)
+
+}
+
+func (d *Doc) lookup(p Parent) *container {
+	if d.containers == nil {
+		return nil
+	}
+	return d.containers[p]
+}
+
+func (d *Doc) container(p Parent) *container {
+	if d.containers[p] != nil {
+		return d.containers[p]
+	}
+
+	if p.IsRoot() {
+		cnt := &container{kind: p.RootKind, list: newSeq()}
+		d.containers[p] = cnt
+		return cnt
+	}
+
+	return nil
+}
+
+func (d *Doc) seqFor(c *container, key string) *seq {
+	if key == "" {
+		return c.list
+	}
+
+	if c.keys == nil {
+		c.keys = make(map[string]*seq)
+	}
+
+	if c.keys[key] != nil {
+		return c.keys[key]
+	} else {
+		c.keys[key] = newSeq()
+		return c.keys[key]
+	}
+}
+
+func (d *Doc) kindOf(p Parent) (Kind, bool) {
+	if p.IsRoot() {
+		return p.RootKind, true
+	}
+
+	item := d.items[p.Item]
+
+	if item == nil {
+		return 0, false
+	}
+
+	if item.CKind != ContentType {
+		return 0, false
+	}
+
+	return item.Type, true
+
+}
+
+func (d *Doc) ParentOf(p Parent) (Parent, bool) {
+	if p.IsRoot() {
+		return Parent{}, false
+	}
+
+	item := d.items[p.Item]
+
+	if item == nil {
+		return Parent{}, false
+	}
+
+	return item.Parent, true
+}
+
+func (d *Doc) ChangedParents(ops []Op) []Parent {
+	var out []Parent
+	seen := make(map[Parent]bool)
+	add := func(p Parent) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, op := range ops {
+		switch o := op.(type) {
+		case InsertOp:
+			add(o.Parent)
+		case DeleteOp:
+			if it, ok := d.items[o.Target]; ok {
+				add(it.Parent)
+			}
+		}
+	}
+	return out
 }

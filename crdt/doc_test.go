@@ -10,15 +10,17 @@ import (
 func checkInvariants(t *testing.T, d *Doc) {
 	t.Helper()
 
+	s := d.text()
+
 	var fwd []*Item
-	for it := d.start; it != nil; it = it.right {
+	for it := s.start; it != nil; it = it.right {
 		fwd = append(fwd, it)
 		if len(fwd) > len(d.items)+5 {
 			t.Fatalf("forward walk does not end (cycle?)")
 		}
 	}
 	var bwd []*Item
-	for it := d.end; it != nil; it = it.left {
+	for it := s.end; it != nil; it = it.left {
 		bwd = append(bwd, it)
 		if len(bwd) > len(d.items)+5 {
 			t.Fatalf("backward walk does not end (cycle?)")
@@ -26,27 +28,30 @@ func checkInvariants(t *testing.T, d *Doc) {
 	}
 	slices.Reverse(bwd)
 
-	if len(fwd) == 0 || fwd[0] != d.start || fwd[len(fwd)-1] != d.end {
+	if len(fwd) == 0 || fwd[0] != s.start || fwd[len(fwd)-1] != s.end {
 		t.Fatalf("forward walk must go from start to end, got %d items", len(fwd))
 	}
 	if !slices.Equal(fwd, bwd) {
 		t.Fatalf("forward walk and backward walk disagree: broken left/right pointers")
 	}
-	if d.start.left != nil || d.end.right != nil {
+	if s.start.left != nil || s.end.right != nil {
 		t.Fatalf("start.left and end.right must be nil")
 	}
-	if len(d.items) != len(fwd) {
-		t.Fatalf("items map has %d entries but the list has %d (sentinels included)", len(d.items), len(fwd))
+	if len(d.items) != len(fwd)-2 {
+		t.Fatalf("items map has %d entries but the list has %d (sentinels excluded)", len(d.items), len(fwd)-2)
 	}
 	for _, it := range fwd {
+		if it == s.start || it == s.end {
+			continue
+		}
 		if d.items[it.ID] != it {
 			t.Fatalf("item %v is in the list but not registered in d.items", it.ID)
 		}
-		if it == d.start || it == d.end {
-			continue
+		if d.items[it.Origin] == nil && it.Origin != StartID {
+			t.Fatalf("item %v has an Origin that does not exist", it.ID)
 		}
-		if d.items[it.Origin] == nil || d.items[it.RightOrigin] == nil {
-			t.Fatalf("item %v has an Origin or RightOrigin that does not exist", it.ID)
+		if d.items[it.RightOrigin] == nil && it.RightOrigin != EndID {
+			t.Fatalf("item %v has a RightOrigin that does not exist", it.ID)
 		}
 	}
 }
@@ -276,19 +281,20 @@ func TestVisibleAt(t *testing.T) {
 	typeText(t, d, "abcd")
 	d.LocalDelete(1)
 	want := []rune{'a', 'c', 'd'}
+	s := d.text()
 	for k, r := range want {
-		it := d.visibleAt(k)
+		it := s.visibleAt(k)
 		if it == nil || it.Content != r {
 			t.Fatalf("visibleAt(%d) wrong, want %q", k, r)
 		}
 	}
-	if d.visibleAt(3) != nil {
+	if s.visibleAt(3) != nil {
 		t.Fatal("visibleAt(len) must be nil")
 	}
-	if d.visibleAt(-1) != nil {
+	if s.visibleAt(-1) != nil {
 		t.Fatal("visibleAt(-1) must be nil")
 	}
-	if it := d.visibleAt(0); it == d.start {
+	if it := s.visibleAt(0); it == s.start {
 		t.Fatal("START must never count as a visible character")
 	}
 }

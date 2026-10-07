@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Shared types: a document is now a set of containers (Text, Array, Map) that can nest. A root container has a name and a kind, a nested one is created by an item and named by its ID (PROTOCOL.md section 1)
+- New `Doc` calls in `crdt`: `TextInsert`, `TextDelete`, `ArrayInsertJSON`, `ArrayInsertType`, `ArrayDelete`, `MapSetJSON`, `MapSetType`, `MapDelete`, `MapChild`, `ToJSON` and `JSON`. Maps keep one sequence per key, and setting a key again keeps the older items
+- Inserts carry a parent and a key, and their content can be a codepoint, JSON (at most 64 KiB) or a container kind. Ops that do not fit their container, or whose origins belong to another parent or key, are rejected like duplicates
+- Wire format: new insert tag 3 for inserts with a parent, a key or typed content. An insert into the default text with a codepoint still uses tag 1, so data written by v0.3.0 loads and edits unchanged and old clients keep working. Decoding garbage returns `ErrBadMessage`, never a panic
+- `reader.bytes` returns a copy of the bytes, so reusing the read buffer cannot change a decoded op
+- WebAssembly bindings for the shared types
+- Tests: round trip of random shared-type ops, tag-3 garbage in `TestDecodeGarbage`, `TestLegacyStaysTag1`, and a new test vector for a map set (PROTOCOL.md section 10)
+- Checked by hand: the current build opens a database written by v0.3.0, loads an old document and edits it normally
+
 ## v0.3.0
 
 - CodeMirror 6 editor replaces the textarea: line numbers, markdown highlighting, line wrapping

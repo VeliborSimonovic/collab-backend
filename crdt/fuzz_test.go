@@ -1,14 +1,119 @@
 package crdt
 
 import (
+	"bytes"
+	"flag"
+	"fmt"
 	"math/rand"
 	"slices"
+	"sort"
 	"testing"
 )
+
+var long = flag.Bool("long", false, "run 100,000 fuzz seeds instead of 5,000")
+
+func fuzzSeeds() int64 {
+	if *long {
+		return 100000
+	}
+	return 5000
+}
 
 type replica struct {
 	doc   *Doc
 	inbox []Op
+	trace []string
+}
+
+func (r *replica) note(kind string, op Op) {
+	r.trace = append(r.trace, fmt.Sprintf("%s %+v", kind, op))
+}
+
+var fuzzKeys = []string{"a", "b", "c"}
+
+func nestedParents(d *Doc) []Parent {
+	var ps []Parent
+	for p := range d.containers {
+		if p.IsRoot() {
+			continue
+		}
+		if it := d.items[p.Item]; it == nil || it.Deleted {
+			continue
+		}
+		ps = append(ps, p)
+	}
+	sort.Slice(ps, func(i, j int) bool {
+		a, b := ps[i].Item, ps[j].Item
+		if a.Client != b.Client {
+			return a.Client < b.Client
+		}
+		return a.Clock < b.Clock
+	})
+	return ps
+}
+
+func editContainer(r *rand.Rand, d *Doc, p Parent, kind Kind) []Op {
+	var ops []Op
+	switch kind {
+	case KindText:
+		str, _ := d.ToJSON(p).(string)
+		n := len([]rune(str))
+		if n == 0 || r.Intn(4) != 0 {
+			ops, _ = d.TextInsert(p, r.Intn(n+1), string(rune('a'+r.Intn(26))))
+		} else {
+			ops, _ = d.TextDelete(p, r.Intn(n), 1)
+		}
+	case KindArray:
+		arr, _ := d.ToJSON(p).([]any)
+		n := len(arr)
+		switch k := r.Intn(3); {
+		case k == 0 && n > 0:
+			ops, _ = d.ArrayDelete(p, r.Intn(n), 1)
+		case k == 1:
+			if op, err := d.ArrayInsertType(p, r.Intn(n+1), KindMap); err == nil {
+				ops = []Op{op}
+			}
+		default:
+			if op, err := d.ArrayInsertJSON(p, r.Intn(n+1), []byte(fmt.Sprint(r.Intn(100)))); err == nil {
+				ops = []Op{op}
+			}
+		}
+	case KindMap:
+		key := fuzzKeys[r.Intn(len(fuzzKeys))]
+		switch r.Intn(3) {
+		case 0:
+			if op, err := d.MapDelete(p, key); err == nil {
+				ops = []Op{op}
+			}
+		case 1:
+			if op, err := d.MapSetType(p, key, KindArray); err == nil {
+				ops = []Op{op}
+			}
+		default:
+			if op, err := d.MapSetJSON(p, key, []byte(fmt.Sprint(r.Intn(100)))); err == nil {
+				ops = []Op{op}
+			}
+		}
+	}
+	return ops
+}
+
+func randomShared(r *rand.Rand, d *Doc) []Op {
+	x := r.Intn(100)
+	switch {
+	case x < 30:
+		return editContainer(r, d, DefaultText(), KindText)
+	case x < 50:
+		return editContainer(r, d, RootParent("a", KindArray), KindArray)
+	case x < 70:
+		return editContainer(r, d, RootParent("m", KindMap), KindMap)
+	}
+	ps := nestedParents(d)
+	if len(ps) == 0 {
+		return nil
+	}
+	p := ps[r.Intn(len(ps))]
+	return editContainer(r, d, p, d.containers[p].kind)
 }
 
 func simulate(seed int64, lossy bool) []*replica {
@@ -20,9 +125,6 @@ func simulate(seed int64, lossy bool) []*replica {
 		reps[i] = &replica{doc: NewDoc(ClientID(i + 1))}
 	}
 
-	hot := 0
-	spread := 1 + rng.Intn(4)
-
 	steps := 20 + rng.Intn(400)
 	for s := 0; s < steps; s++ {
 		switch {
@@ -31,32 +133,13 @@ func simulate(seed int64, lossy bool) []*replica {
 
 		case rng.Intn(2) == 0:
 			i := rng.Intn(n)
-			r := reps[i]
-			length := len([]rune(r.doc.String()))
-
-			pos := hot + rng.Intn(2*spread+1) - spread
-			pos = max(0, min(pos, length))
-			if rng.Intn(10) == 0 {
-				hot = rng.Intn(length + 1)
-			}
-
-			var op Op
-			if length == 0 || rng.Intn(4) != 0 {
-				o, err := r.doc.LocalInsert(pos, rune('a'+rng.Intn(26)))
-				if err != nil {
-					continue
-				}
-				op = o
-			} else {
-				o, err := r.doc.LocalDelete(min(pos, length-1))
-				if err != nil {
-					continue
-				}
-				op = o
-			}
-			for j, other := range reps {
-				if j != i {
-					other.inbox = append(other.inbox, op)
+			ops := randomShared(rng, reps[i].doc)
+			for _, op := range ops {
+				reps[i].note("local", op)
+				for j, other := range reps {
+					if j != i {
+						other.inbox = append(other.inbox, op)
+					}
 				}
 			}
 
@@ -67,6 +150,7 @@ func simulate(seed int64, lossy bool) []*replica {
 			}
 			k := rng.Intn(len(r.inbox))
 			op := r.inbox[k]
+			r.note("recv", op)
 			r.doc.Receive(op)
 
 			if rng.Intn(10) == 0 {
@@ -97,8 +181,47 @@ func simulate(seed int64, lossy bool) []*replica {
 	return reps
 }
 
+func countVisible(s *seq) int {
+	n := 0
+	for it := s.start.right; it != s.end; it = it.right {
+		if !it.Deleted {
+			n++
+		}
+	}
+	return n
+}
+
 func assertConverged(t *testing.T, seed int64, reps []*replica) {
 	t.Helper()
+	defer func() {
+		if t.Failed() {
+			for i, r := range reps {
+				t.Logf("seed %d replica %d trace:", seed, i)
+				for _, l := range r.trace {
+					t.Log("  " + l)
+				}
+			}
+		}
+	}()
+
+	wantJSON, _ := reps[0].doc.JSON()
+	for i, r := range reps {
+		got, _ := r.doc.JSON()
+		if !bytes.Equal(got, wantJSON) {
+			t.Fatalf("seed %d: replica 0 JSON %s, replica %d JSON %s", seed, wantJSON, i, got)
+		}
+		for p, c := range r.doc.containers {
+			ss := []*seq{c.list}
+			for _, s := range c.keys {
+				ss = append(ss, s)
+			}
+			for _, s := range ss {
+				if s != nil && s.n != countVisible(s) {
+					t.Fatalf("seed %d: replica %d container %v: n=%d, walk=%d", seed, i, p, s.n, countVisible(s))
+				}
+			}
+		}
+	}
 
 	wantText := reps[0].doc.String()
 	wantOrder := reps[0].doc.Order()
@@ -139,13 +262,13 @@ func assertConverged(t *testing.T, seed int64, reps []*replica) {
 }
 
 func TestFuzzConverges(t *testing.T) {
-	for seed := int64(0); seed < 3000; seed++ {
+	for seed := int64(0); seed < fuzzSeeds(); seed++ {
 		assertConverged(t, seed, simulate(seed, false))
 	}
 }
 
 func TestFuzzLossyDiffSync(t *testing.T) {
-	for seed := int64(0); seed < 3000; seed++ {
+	for seed := int64(0); seed < fuzzSeeds(); seed++ {
 		assertConverged(t, seed, simulate(seed, true))
 	}
 }

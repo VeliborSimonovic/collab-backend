@@ -10,11 +10,26 @@ Two sentinel values:
  - `START` = `(0, 0)`
  - `END` = `(0, 1)`
 
+A document is a set of **containers**. A container is one of three kinds:
+- **Text**: a sequence of codepoints
+- **Array**: a sequence of values
+- **Map**: string keys, each holding a value
+
+A value is either JSON (a JSON text of at most 64 KiB) or a nested container of one of the three kinds.
+
+A container is named in one of two ways, and that name is its **ref**:
+- a **root** container has a name and a kind, ref `r:<kind>:<name>`, kind being `text`, `array` or `map`. The name may be empty and may contain `:`. `r:text:` is the default text, `r:map:slides` a Map called `slides`. The same name with a different kind is a different container.
+- a **nested** container is created by an item whose content is a type, and is named by that item's ID, ref `i:<client>:<clock>` with both numbers in decimal. `i:1048577:42` is the container created by item `(1048577, 42)`. Client `0` is never a nested container.
+
+Each sequence has its own `START` and `END`. A Text or an Array is one sequence. A Map has one sequence per key, so every key is an independent sequence.
+
 Each `item` contains the following fields:
 - id
 - origin - its left neighbour when created
 - rightOrigin - its right neighbour when created
-- content - one codepoint
+- parent - the container it belongs to
+- key - the map key, empty unless the parent is a Map
+- content - one codepoint (Text), a JSON text, or a container kind (Array and Map)
 - deleted flag
 > Origins never change
 
@@ -24,9 +39,12 @@ InsertOp {              DeleteOp {
     id,                     id,
     origin,                 target
     rightOrigin,        }
+    parent,
+    key,
     content
 }
 ```
+An insert with the zero parent, an empty key and a codepoint as content is the original single text: it is the same as an insert into `r:text:`.
 Deletes are tombstones, meaning items are never really removed.
 > Subject to change in the future
 
@@ -42,6 +60,16 @@ Delete at position `p`:
 - `target` is the visible item at `p`
 
 Both take the next clock value of the client and are applied to its own document straight away.
+
+An Array insert follows the same rules as a Text insert, inside the Array's own sequence. An Array delete is the same as a Text delete.
+
+Map set of key `k`:
+- `origin` is the LAST item of the sequence of `k`, even if it is deleted, or `START` when the key has no items yet
+- `rightOrigin` is `END`
+
+Map delete of key `k`: `target` is that same last item. Deleting a key that has no value is an error and makes no op.
+
+The value of a key is its last item, if that item is not deleted. Setting a key again does not remove the older items, they stay in the sequence.
 
 ## 3. Integration algorithm
 
@@ -66,17 +94,26 @@ To place a new item:
 
 The state vector of a replica maps each client to the next clock it expects from that client. `{5: 3}` means it has ops 0, 1 and 2 of client 5.
 
-Some ops are rejected outright, treated like a duplicate:
+Some ops are rejected outright, treated like a duplicate (dropped, never kept pending):
 - an op from client `0`
 - an insert with `origin` = `END` or `rightOrigin` = `START`
 - a delete that targets `START` or `END`
+- an insert whose parent is an item that exists but is not a container, or is a container kind that is not valid
+- a Text insert whose content is not a codepoint or that has a key
+- an Array insert whose content is not JSON or a container kind, or that has a key
+- a Map insert whose content is not JSON or a container kind, or that has no key
+- JSON content that is not valid JSON, or is over 64 KiB
+- container content whose kind is not text, array or map
+- an `origin` or `rightOrigin` that exists but belongs to another parent or another key
 
 Every other op is one of three things:
 - duplicate: its clock is below the expected one. Ignore it.
-- not ready: its clock is above the expected one (a gap), or it points at an item we do not have yet (`origin`, `rightOrigin` or `target`). Keep it pending.
+- not ready: its clock is above the expected one (a gap), or it points at an item we do not have yet (`origin`, `rightOrigin`, `target`, or the item that is its nested parent). Keep it pending.
 - ready: its clock is exactly the expected one and everything it points at exists. Apply it, then set the state vector for that client to `clock + 1`.
 
-Pending ops are tried again until a whole pass applies nothing.
+Pending ops are tried again until a whole pass applies nothing. This is how an op for a nested container can arrive before the op that creates the container: it waits.
+
+The checks run in this order: client, clock, then (for inserts) the origin sentinels, the parent, the content rules, and last the origins. The first one that fails decides the outcome. The wait for a missing parent comes before the content rules, so a wrongly shaped op for a missing parent is kept pending and dropped only once the parent exists.
 
 `Diff(theirs)` is every op you have, from ALL clients, with a clock at or above `theirs` for that client.
 
@@ -97,6 +134,20 @@ then for each op, one of:
 ```
 `content` is the codepoint as a number, at most `2^31 - 1`.
 
+Tag 3 is an insert that carries a parent, a key and a typed content. Every field is a varint, and `bytes` is a varint length followed by that many bytes:
+```
+3, id, origin, rightOrigin, parent, key, ckind, content
+parent   0, name (bytes), kind           root container
+         1, id                           nested container
+key      bytes (empty unless the parent is a Map)
+ckind    0 codepoint, 1 JSON, 2 container kind
+content  ckind 0: a codepoint, at most 2^31 - 1
+         ckind 1: the JSON text (bytes)
+         ckind 2: a kind
+kind     0 text, 1 array, 2 map
+```
+An encoder uses tag 1 when the insert has the zero parent, an empty key and a codepoint as content, and tag 3 for every other insert. Tag 1 stays the only encoding of the default text, so old data and old clients keep working. Deletes always use tag 2.
+
 State vector:
 ```
 count
@@ -109,6 +160,7 @@ A decoder MUST reject:
 - input that is cut short
 - bytes left over at the end
 - a `content` above `2^31 - 1`
+- in tag 3: a parent flag other than 0 or 1, a nested parent with client `0`, a kind above 2, a `ckind` above 2, a name or key longer than 255 bytes, or JSON longer than 64 KiB
 
 ## 6. WebSocket
 
@@ -221,7 +273,7 @@ Send the token as `?token=` (browsers cannot set headers on a WebSocket) or as `
 
 ## 8. HTTP API
 
-For your backend, not for browsers. Both endpoints need a token for that document.
+For your backend, not for browsers. The endpoints below need a token for that document.
 
 `GET /v1/docs/{id}/text` returns the whole text as `text/plain`. Editors and viewers may call it.
 
@@ -230,6 +282,9 @@ For your backend, not for browsers. Both endpoints need a token for that documen
 | 200 | the text |
 | 401, 403 | see section 7 |
 | 500 | store error |
+
+`GET /v1/docs/{id}/json` returns the whole document as `application/json`. Editors and viewers may call it. The response is one object with a key `"<name>:<kind>"` for each non-empty root container, for example `"m:map"` or `":text"` for the default text. The value is that container as JSON: a Text is a string, an Array a list, a Map an object, and nested containers are inlined the same way. Deleted values are left out.
+> This endpoint is not in the server yet: `crdt.Doc.JSON()` builds the response, but no route calls it.
 
 `POST /v1/docs/{id}/edit`, editors only, with a JSON body:
 ```json
@@ -269,6 +324,8 @@ Feed the three ops to a fresh document in all 6 orders. Every order must give th
 1. `l = (3:0, START, END) 'l'`, `q = (3:1, l, END) 'q'`, `m = (2:0, START, END) 'm'` gives `mlq`
 2. `v = (1:0, START, END) 'v'`, `p = (3:0, START, v) 'p'`, `c = (2:0, START, END) 'c'` gives `pvc`
 
+3. Two clients set the same key from an empty map. `a = (2:0, START, END)` sets key `color` of `r:map:m` to `"red"`, `b = (5:0, START, END)` sets the same key to `"blue"`. Feed them in both orders: every order gives `{"color":"blue"}`, the value of the higher client wins.
+
 ### Encoding
 
 Hex of an ops message:
@@ -278,6 +335,7 @@ Hex of an ops message:
 | insert `(3:0, START, END) 'l'` | `01010300000000016c` |
 | that insert, then delete id `(3:1)` target `(3:0)` | `02010300000000016c0203010300` |
 | insert `(3:0, START, END) 'é'` (codepoint 233, a 2 byte varint) | `0101030000000001e901` |
+| map set: `(3:0, START, END)` in `r:map:m`, key `k`, JSON `1` (tag 3) | `010303000000000100016d02016b010131` |
 
 Hex of a state vector:
 

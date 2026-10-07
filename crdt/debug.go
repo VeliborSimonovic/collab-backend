@@ -7,7 +7,8 @@ import (
 
 func (d *Doc) Dump() string {
 	var b strings.Builder
-	for it := d.start.right; it != d.end; it = it.right {
+	s := d.text()
+	for it := s.start.right; it != s.end; it = it.right {
 		mark := " "
 		if it.Deleted {
 			mark = "x"
@@ -20,19 +21,21 @@ func (d *Doc) Dump() string {
 }
 
 func (d *Doc) Check() error {
+	s := d.text()
+
 	var fwd []*Item
-	for it := d.start; it != nil; it = it.right {
+	for it := s.start; it != nil; it = it.right {
 		fwd = append(fwd, it)
 		if len(fwd) > len(d.items)+5 {
 			return fmt.Errorf("forward walk does not end (cycle?)")
 		}
 	}
-	if len(fwd) == 0 || fwd[0] != d.start || fwd[len(fwd)-1] != d.end {
+	if len(fwd) == 0 || fwd[0] != s.start || fwd[len(fwd)-1] != s.end {
 		return fmt.Errorf("forward walk must run from start to end")
 	}
 
 	i := len(fwd) - 1
-	for it := d.end; it != nil; it = it.left {
+	for it := s.end; it != nil; it = it.left {
 		if i < 0 || fwd[i] != it {
 			return fmt.Errorf("forward and backward walks disagree: broken left/right pointers")
 		}
@@ -42,22 +45,26 @@ func (d *Doc) Check() error {
 		return fmt.Errorf("backward walk is shorter than the forward walk")
 	}
 
-	if d.start.left != nil || d.end.right != nil {
+	if s.start.left != nil || s.end.right != nil {
 		return fmt.Errorf("start.left and end.right must be nil")
 	}
-	if len(d.items) != len(fwd) {
-		return fmt.Errorf("items map has %d entries but the list has %d", len(d.items), len(fwd))
+	if len(d.items) != len(fwd)-2 {
+		return fmt.Errorf("items map has %d entries but the list has %d (sentinels excluded)", len(d.items), len(fwd)-2)
 	}
 
 	index := make(map[ID]int, len(fwd))
 	for n, it := range fwd {
+		if it == s.start || it == s.end {
+			index[it.ID] = n
+			continue
+		}
 		if d.items[it.ID] != it {
 			return fmt.Errorf("item %v is in the list but not registered in items", it.ID)
 		}
 		index[it.ID] = n
 	}
 	for _, it := range fwd {
-		if it == d.start || it == d.end {
+		if it == s.start || it == s.end {
 			continue
 		}
 		o, ok1 := index[it.Origin]

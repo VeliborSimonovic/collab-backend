@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
 
 - Shared types: a document is now a set of containers (Text, Array, Map) that can nest. A root container has a name and a kind, a nested one is created by an item and named by its ID (PROTOCOL.md section 1)
 - New `Doc` calls in `crdt`: `TextInsert`, `TextDelete`, `ArrayInsertJSON`, `ArrayInsertType`, `ArrayDelete`, `MapSetJSON`, `MapSetType`, `MapDelete`, `MapChild`, `ToJSON` and `JSON`. Maps keep one sequence per key, and setting a key again keeps the older items

@@ -271,7 +271,6 @@ func main() {
 	if cfg.pprof != "" {
 		go func() {
 			log.Printf("pprof listening on %s", cfg.pprof)
-
 			if err := http.ListenAndServe(cfg.pprof, nil); err != nil {
 				log.Printf("pprof: %v", err)
 			}
